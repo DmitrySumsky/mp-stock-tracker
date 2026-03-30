@@ -1,0 +1,14 @@
+# Личная конфигурация clasp (содержит scriptId вашего проекта)
+.clasp.json
+
+# Node
+node_modules/
+package-lock.json
+
+# Переменные окружения
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
