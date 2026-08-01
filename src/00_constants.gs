@@ -34,6 +34,23 @@ const PANEL = {
 // ─── Модуль: Остатки маркетплейсов ───────────────────────
 const LOW_STOCK_THRESHOLD = 5;  // порог «низких остатков», шт.
 
+// ─── Модуль: Wildberries — отчёт «Остатки на складах» ────
+//
+// Старый statistics-api…/v1/supplier/stocks отключён WB 20.07.2026.
+// Раздел прав у нового отчёта — «Аналитика», не «Статистика».
+//
+const WB_REMAINS_URL    = 'https://seller-analytics-api.wildberries.ru/api/v1/warehouse_remains';
+const WB_REMAINS_PARAMS = '?groupBySa=true&groupByNm=true&groupByBarcode=true' +
+                          '&groupBySize=true&filterPics=0&filterVolume=0';
+
+const WB_REMAINS_POLL_MS    = 5000;    // пауза между проверками готовности
+const WB_REMAINS_TIMEOUT_MS = 120000;  // потолок ожидания отчёта (боевой замер ~8 с)
+
+// Псевдосклады в ответе WB — это не склады, а агрегаты
+const WB_REMAINS_TOTAL        = 'Всего находится на складах';
+const WB_REMAINS_IN_WAY_TO    = 'В пути до получателей';
+const WB_REMAINS_IN_WAY_FROM  = 'В пути возвраты на склад WB';
+
 // ─── Модуль: МойСклад ────────────────────────────────────
 const MS_API_BASE  = 'https://api.moysklad.ru/api/remap/1.2';
 const MS_SHOW_ZERO = false;  // показывать товары с нулевым остатком

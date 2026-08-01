@@ -5,7 +5,15 @@
 // ─── HTTP ────────────────────────────────────────────────
 
 /**
- * Выполняет HTTP-запрос с повторными попытками при ошибках.
+ * Выполняет HTTP-запрос с повторными попытками.
+ *
+ * Ретраятся только те ошибки, которые лечатся повтором: сеть, 5xx и 429.
+ * 4xx возвращается сразу — повтор «метода нет» или «токен протух» ничего
+ * не чинит, а на 8 кабинетах съедает минуты из лимита GAS в 6 минут.
+ * Текст ошибки маркетплейса берётся ИЗ ТЕЛА ответа: у WB там лежит причина
+ * («token scope not allowed», «This method is deprecated» со ссылкой), и
+ * без неё в отчёт уходит бесполезное «HTTP 404».
+ *
  * @param {string} url
  * @param {Object} options — параметры UrlFetchApp.fetch
  * @param {number} [maxRetries=3]
@@ -17,16 +25,39 @@ function fetchWithRetry(url, options, maxRetries) {
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const res = UrlFetchApp.fetch(url, options);
-      if (res.getResponseCode() === 200) return res;
-      lastError = new Error(`HTTP ${res.getResponseCode()}`);
+      const res  = UrlFetchApp.fetch(url, options);
+      const code = res.getResponseCode();
+      if (code === 200) return res;
+
+      lastError = new Error(`HTTP ${code}: ${extractApiError_(res)}`);
+
+      // 4xx, кроме 429, повтором не лечится
+      if (code >= 400 && code < 500 && code !== 429) throw lastError;
+
+      if (code === 429) {
+        const wait = Number(res.getHeaders()['X-Ratelimit-Retry'] || 0);
+        if (wait > 0) Utilities.sleep(Math.min(wait, 60) * 1000);
+      }
     } catch (e) {
+      if (e === lastError) throw e;   // осознанный отказ, а не сбой сети
       lastError = e;
     }
     if (attempt < maxRetries) Utilities.sleep(2000 * attempt);
   }
 
   throw new Error(`${lastError.message} (после ${maxRetries} попыток)`);
+}
+
+/** Достаёт из тела ответа причину отказа, обрезая до читаемой длины. */
+function extractApiError_(res) {
+  const body = String(res.getContentText() || '').trim();
+  try {
+    const j = JSON.parse(body);
+    const parts = [j.title, j.detail, j.message, j.error, j.errorMessage]
+      .filter(Boolean).map(String);
+    if (parts.length) return parts.join(' — ').slice(0, 300);
+  } catch (e) { /* тело не JSON — отдаём как есть */ }
+  return body.slice(0, 300) || '(пустое тело ответа)';
 }
 
 // ─── Работа с листами ────────────────────────────────────
@@ -108,7 +139,7 @@ function cleanupOldData() {
     const sheet = ss.getSheetByName(cab.sheetName);
     if (!sheet || sheet.getLastRow() <= 1) return;
 
-    const dateCol = cab.mp === 'OZON' ? 9 : 1;
+    const dateCol = 1;
     const data    = sheet.getDataRange().getValues();
 
     for (let i = data.length - 1; i >= 1; i--) {

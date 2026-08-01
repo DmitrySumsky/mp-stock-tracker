@@ -73,20 +73,22 @@ function healthCheck() {
         );
         results.push(res.getResponseCode() === 200
           ? `✅ OZON ${cab.id}: OK`
-          : `❌ OZON ${cab.id}: HTTP ${res.getResponseCode()}`);
+          : `❌ OZON ${cab.id}: HTTP ${res.getResponseCode()} — ${extractApiError_(res)}`);
 
       } else if (cab.mp === 'WB') {
         if (!cab.token) {
           results.push(`⚠️ WB ${cab.id}: токен пустой`);
           return;
         }
+        // Проверяем ту же ручку, которой пользуется сбор (раздел «Аналитика»).
+        // Заказ отчёта ничего не меняет, скачивать его здесь не нужно.
         const res = UrlFetchApp.fetch(
-          'https://statistics-api.wildberries.ru/api/v1/supplier/stocks?dateFrom=2024-01-01',
+          WB_REMAINS_URL + WB_REMAINS_PARAMS,
           { headers: { Authorization: cab.token }, muteHttpExceptions: true }
         );
         results.push(res.getResponseCode() === 200
           ? `✅ WB ${cab.id}: OK`
-          : `❌ WB ${cab.id}: HTTP ${res.getResponseCode()}`);
+          : `❌ WB ${cab.id}: HTTP ${res.getResponseCode()} — ${extractApiError_(res)}`);
       }
     } catch (e) {
       results.push(`❌ ${cab.mp} ${cab.id}: ${e.message}`);
