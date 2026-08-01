@@ -43,8 +43,12 @@ const WB_REMAINS_URL    = 'https://seller-analytics-api.wildberries.ru/api/v1/wa
 const WB_REMAINS_PARAMS = '?groupBySa=true&groupByNm=true&groupByBarcode=true' +
                           '&groupBySize=true&filterPics=0&filterVolume=0';
 
-const WB_REMAINS_POLL_MS    = 5000;    // пауза между проверками готовности
-const WB_REMAINS_TIMEOUT_MS = 120000;  // потолок ожидания отчёта (боевой замер ~8 с)
+// Квота отчётов у WB считается ПО ЗАПРОСАМ, и опрос статуса её тоже ест.
+// При исчерпании WB отвечает 200 с пустым телом (проверено 01.08.2026), поэтому
+// опрашиваем редко: отчёт готовится ~8 с, первый же опрос через 15 с его застаёт.
+const WB_REMAINS_POLL_MS    = 15000;   // пауза между проверками готовности
+const WB_REMAINS_TIMEOUT_MS = 120000;  // потолок ожидания отчёта
+const WB_REMAINS_COOLDOWN_MS = 30000;  // пауза перед единственной повторной скачкой
 
 // Псевдосклады в ответе WB — это не склады, а агрегаты
 const WB_REMAINS_TOTAL        = 'Всего находится на складах';

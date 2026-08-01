@@ -78,21 +78,50 @@ function fetchWB(ss, cab) {
 function fetchWbRemains_(token) {
   const opts = { headers: { Authorization: token }, muteHttpExceptions: true };
 
-  const created = fetchWithRetry(WB_REMAINS_URL + WB_REMAINS_PARAMS, opts);
-  const taskId  = JSON.parse(created.getContentText()).data.taskId;
+  const created = wbJson_(fetchWithRetry(WB_REMAINS_URL + WB_REMAINS_PARAMS, opts));
+  const taskId  = created.data && created.data.taskId;
   if (!taskId) throw new Error('WB не вернул taskId');
 
   const deadline = Date.now() + WB_REMAINS_TIMEOUT_MS;
   while (Date.now() < deadline) {
     Utilities.sleep(WB_REMAINS_POLL_MS);
-    const res    = fetchWithRetry(`${WB_REMAINS_URL}/tasks/${taskId}/status`, opts);
-    const status = JSON.parse(res.getContentText()).data.status;
+    const status = wbJson_(fetchWithRetry(`${WB_REMAINS_URL}/tasks/${taskId}/status`, opts)).data.status;
     if (status === 'done')   break;
     if (status === 'purged') throw new Error('Отчёт WB удалён на стороне маркетплейса');
   }
 
-  const dump = fetchWithRetry(`${WB_REMAINS_URL}/tasks/${taskId}/download`, opts);
-  const data = JSON.parse(dump.getContentText());
-  if (!Array.isArray(data)) throw new Error('Отчёт WB не готов за отведённое время');
+  // Пустое тело на скачивании означает одно из двух (проверено 01.08.2026):
+  // кабинет действительно без остатков — либо кончилась квота отчётов.
+  // Различаем повтором: отчёт уже готов, ждать его заново не нужно.
+  let body = wbBody_(fetchWithRetry(`${WB_REMAINS_URL}/tasks/${taskId}/download`, opts));
+  if (!body) {
+    Utilities.sleep(WB_REMAINS_COOLDOWN_MS);
+    body = wbBody_(fetchWithRetry(`${WB_REMAINS_URL}/tasks/${taskId}/download`, opts));
+  }
+  if (!body) return [];   // дважды пусто — считаем, что остатков нет
+
+  const data = JSON.parse(body);
+  if (!Array.isArray(data)) throw new Error('Отчёт WB вернул не список строк');
   return data;
+}
+
+/** Тело ответа без пробелов; пустая строка, если тела нет. */
+function wbBody_(res) {
+  return String(res.getContentText() || '').trim();
+}
+
+/**
+ * Разбирает ответ WB, отдельно ловя пустое тело.
+ * Проверено 01.08.2026: WB отвечает HTTP 200 с ПУСТЫМ телом и на исчерпанной
+ * квоте отчётов, и на пустом отчёте — голый JSON.parse падает на
+ * «Unexpected end of input», и причина теряется.
+ */
+function wbJson_(res) {
+  const body = wbBody_(res);
+  if (!body) {
+    const left = res.getHeaders()['X-Ratelimit-Remaining'];
+    throw new Error('WB вернул пустой ответ (лимитер отчётов' +
+      (left !== undefined ? `, остаток квоты: ${left}` : '') + ') — повторить позже');
+  }
+  return JSON.parse(body);
 }
