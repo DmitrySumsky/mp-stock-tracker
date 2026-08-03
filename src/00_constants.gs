@@ -34,6 +34,26 @@ const PANEL = {
 // ─── Модуль: Остатки маркетплейсов ───────────────────────
 const LOW_STOCK_THRESHOLD = 5;  // порог «низких остатков», шт.
 
+// ─── Модуль: OZON — остатки ──────────────────────────────
+//
+// Две ручки дополняют друг друга: первая даёт свободно/готовим/резерв,
+// вторая — товары в пути, возвраты, брак и кластер склада.
+//
+const OZON_URL_STOCK_ON_WAREHOUSES = 'https://api-seller.ozon.ru/v2/analytics/stock_on_warehouses';
+const OZON_URL_ANALYTICS_STOCKS    = 'https://api-seller.ozon.ru/v1/analytics/stocks';
+const OZON_URL_PRODUCT_STOCKS      = 'https://api-seller.ozon.ru/v4/product/info/stocks';
+
+const OZON_ANALYTICS_BATCH = 100;   // потолок SKU в одном запросе /v1/analytics/stocks
+const OZON_PRODUCT_PAGE    = 1000;  // размер страницы при сборе номенклатуры
+
+const OZON_HEADERS = [
+  'Дата и время', 'Артикул', 'SKU', 'Название товара', 'Склад',
+  'Доступно к продаже', 'Готовим к продаже', 'Зарезервировано', 'Всего у OZON',
+  'Доступно (аналитика)', 'В пути на склад', 'Заявлено к поставке',
+  'Возврат от покупателя', 'Возврат продавцу', 'Брак на складе', 'Брак в пути',
+  'Ждёт документов', 'Прочее', 'Кластер', 'Всего вверено OZON'
+];
+
 // ─── Модуль: Wildberries — отчёт «Остатки на складах» ────
 //
 // Старый statistics-api…/v1/supplier/stocks отключён WB 20.07.2026.

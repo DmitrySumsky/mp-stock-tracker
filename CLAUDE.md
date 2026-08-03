@@ -151,7 +151,7 @@ clasp push --force        # → Google Таблица (актуальная ве
 
 | Сервис | Endpoint | Аутентификация |
 |--------|----------|----------------|
-| OZON Seller | `https://api-seller.ozon.ru/v2/analytics/stock_on_warehouses` | `client-id` + `api-key` headers |
+| OZON Seller | `/v2/analytics/stock_on_warehouses` (свободно/готовим/резерв) + `/v1/analytics/stocks` (в пути, возвраты, брак, кластер; SKU пачками по 100) + `/v4/product/info/stocks` (сбор номенклатуры) | `client-id` + `api-key` headers |
 | WB Analytics (остатки) | `https://seller-analytics-api.wildberries.ru/api/v1/warehouse_remains` (async: заказ → status → download) | `Authorization` header, право **«Аналитика»** |
 | МойСклад | `https://api.moysklad.ru/api/remap/1.2` | `Bearer` token |
 | Telegram Bot | `https://api.telegram.org/bot{token}/sendMessage` | token в URL |

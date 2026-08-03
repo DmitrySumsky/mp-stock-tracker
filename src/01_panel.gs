@@ -62,6 +62,39 @@ function initPanel() {
 }
 
 /**
+ * Приводит существующую Панель управления к актуальной структуре.
+ * Вставляет строки для блока МойСклад, если их ещё нет.
+ * Безопасно вызывать повторно — проверяет текущее состояние перед изменениями.
+ */
+function patchPanel() {
+  const ss    = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_PANEL);
+  if (!sheet) { initPanel(); return; }
+
+  const a5 = sheet.getRange('A5').getValue().toString().trim();
+
+  // Если A5 уже содержит «API Токен» — структура верная, ничего не делаем
+  if (a5 === 'API Токен') {
+    SpreadsheetApp.getUi().alert('✅ Панель управления уже актуальна.');
+    return;
+  }
+
+  // Вставляем 2 строки после строки 4, сдвигая КАБИНЕТЫ и таблицу вниз
+  sheet.insertRowsAfter(4, 2);
+
+  // Заполняем строку 4 (заголовок блока МойСклад)
+  sheet.getRange('A4').setValue('🏪 МОЙ СКЛАД').setFontWeight('bold').setFontSize(11);
+
+  // Строка 5 — поле API Токен
+  sheet.getRange('A5').setValue('API Токен');
+  sheet.getRange('B5').setNote('Токен из МойСклад: Настройки → Доступ по API');
+
+  // Строка 6 остаётся пустой (разделитель перед КАБИНЕТЫ в строке 7)
+
+  SpreadsheetApp.getUi().alert('✅ Панель управления обновлена.\nПоле API Токен МойСклад — ячейка B5.');
+}
+
+/**
  * Переносит кабинеты из старых технических листов в Панель управления.
  *
  * Адаптируйте ozonMap и wbMap под структуру ваших старых листов:

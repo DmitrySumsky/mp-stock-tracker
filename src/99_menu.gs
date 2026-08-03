@@ -48,6 +48,7 @@ function onOpen() {
 
     // ── Сервис ───────────────────────────────────────────
     .addSubMenu(ui.createMenu('⚙️ Сервис')
+      .addItem('Обновить панель управления',    'patchPanel')
       .addItem('Очистка старых данных...',     'cleanupOldData')
       .addItem('Миграция из старых листов',    'migrateFromOldConfig'))
 

@@ -63,13 +63,8 @@ function healthCheck() {
           return;
         }
         const res = UrlFetchApp.fetch(
-          'https://api-seller.ozon.ru/v2/analytics/stock_on_warehouses',
-          {
-            method: 'post', contentType: 'application/json',
-            headers: { 'client-id': cab.clientId, 'api-key': cab.apiKey },
-            payload: JSON.stringify({ limit: 1, offset: 0, warehouse_type: 'ALL' }),
-            muteHttpExceptions: true
-          }
+          OZON_URL_STOCK_ON_WAREHOUSES,
+          ozonOptions_(cab, { limit: 1, offset: 0, warehouse_type: 'ALL' })
         );
         results.push(res.getResponseCode() === 200
           ? `✅ OZON ${cab.id}: OK`

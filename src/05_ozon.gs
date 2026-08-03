@@ -1,18 +1,23 @@
 // ════════════════════════════════════════════════════════════
 // МОДУЛЬ: OZON API — сбор остатков по складам
 // ════════════════════════════════════════════════════════════
+//
+// Источников два, и они дополняют друг друга (сверено на боевом кабинете 03.08.2026):
+//
+//   /v2/analytics/stock_on_warehouses — свободно / готовим к продаже / резерв,
+//       но показывает ТОЛЬКО склады, где товар физически лежит: ни товаров в пути,
+//       ни возвратов, ни брака. По одному SKU это было 22 склада против 37.
+//
+//   /v1/analytics/stocks — всё остальное, что вверено Ozon: в пути на склад,
+//       заявлено к поставке, возвраты от покупателя и продавцу, брак, ожидание
+//       документов, плюс кластер склада. Требует список SKU (пачками до 100),
+//       поэтому сначала собираем номенклатуру через /v4/product/info/stocks.
+//
+// Раскладка листа: первые 9 колонок оставлены как были (на них могут быть завязаны
+// формулы соседних листов), новые данные дописаны справа.
 
 /**
  * Загружает остатки OZON для одного кабинета и записывает в лист.
- *
- * Поля из API /v2/analytics/stock_on_warehouses:
- *   free_to_sell_amount  — доступно к продаже на складах OZON
- *   promised_amount      — готовим к продаже (приняты, проходят обработку)
- *   reserved_amount      — зарезервировано: в доставке к покупателям +
- *                          возвраты в пути + перемещения между складами
- *
- * Итого у OZON = free + promised + reserved.
- *
  * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} ss
  * @param {Object} cab — объект кабинета из loadCabinets()
  * @returns {number} количество загруженных строк
@@ -20,60 +25,184 @@
 function fetchOzon(ss, cab) {
   if (!cab.clientId || !cab.apiKey) throw new Error('Client ID или API Key пустые');
 
-  const url  = 'https://api-seller.ozon.ru/v2/analytics/stock_on_warehouses';
-  const now  = new Date();
-  const headers = [
-    'Дата и время', 'Артикул', 'SKU', 'Название товара', 'Склад',
-    'Доступно к продаже', 'Готовим к продаже', 'Зарезервировано', 'Всего у OZON'
-  ];
+  const now     = new Date();
+  const onStock = fetchOzonOnWarehouses_(cab);   // ключ: sku|склад
+  const full    = fetchOzonAnalyticsStocks_(cab); // ключ: sku|склад
 
-  let allRows = [];
-  let offset  = 0;
-  const limit = 1000;
+  // Объединяем: строка появляется, если она есть хотя бы в одном источнике
+  const keys = {};
+  Object.keys(onStock).forEach(k => { keys[k] = true; });
+  Object.keys(full).forEach(k => { keys[k] = true; });
 
-  while (true) {
-    const res = fetchWithRetry(url, {
-      method:      'post',
-      contentType: 'application/json',
-      headers:     { 'client-id': cab.clientId, 'api-key': cab.apiKey },
-      payload:     JSON.stringify({ limit, offset, warehouse_type: 'ALL' }),
-      muteHttpExceptions: true
-    });
+  const rows = Object.keys(keys).map(key => {
+    const o = onStock[key] || {};
+    const f = full[key]    || {};
 
-    const data = JSON.parse(res.getContentText()).result.rows;
-    if (!data || data.length === 0) break;
+    const free     = o.free     || 0;
+    const promised = o.promised || 0;
+    const reserved = o.reserved || 0;
 
-    const mapped = data.map(r => {
-      const free     = r.free_to_sell_amount || 0;
-      const promised = r.promised_amount     || 0;
-      const reserved = r.reserved_amount     || 0;
-      return [
-        now,
-        r.item_code     || '',
-        r.sku           || '',
-        r.item_name     || '',
-        r.warehouse_name || '',
-        free,
-        promised,
-        reserved,
-        free + promised + reserved
-      ];
-    });
+    // «Всего у OZON» (колонка 9) сохраняет прежний смысл, чтобы не сломать формулы
+    const legacyTotal = free + promised + reserved;
 
-    allRows = allRows.concat(mapped);
-    offset += data.length;
-    if (data.length < limit) break;
-  }
+    // «Всего вверено OZON» — то, что физически у маркетплейса: остатки на складах,
+    // товары в пути, возвраты и брак. «Заявлено к поставке» сюда НЕ входит:
+    // это ещё не отгруженная заявка, её видно отдельной колонкой.
+    const entrusted = Math.max(free, f.available || 0) + promised + reserved +
+      (f.transit || 0) + (f.returnFromCustomer || 0) + (f.returnToSeller || 0) +
+      (f.defectStock || 0) + (f.defectTransit || 0) + (f.waitingDocs || 0) + (f.other || 0);
+
+    return [
+      now,
+      o.offerId || f.offerId || '',
+      o.sku     || f.sku     || '',
+      o.name    || f.name    || '',
+      o.warehouse || f.warehouse || '',
+      free,
+      promised,
+      reserved,
+      legacyTotal,
+      f.available         || 0,
+      f.transit           || 0,
+      f.requested         || 0,
+      f.returnFromCustomer|| 0,
+      f.returnToSeller    || 0,
+      f.defectStock       || 0,
+      f.defectTransit     || 0,
+      f.waitingDocs       || 0,
+      f.other             || 0,
+      f.cluster           || '',
+      entrusted
+    ];
+  });
+
+  rows.sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'ru', { numeric: true }));
 
   // Лист перезаписывается снапшотом, поэтому пустой ответ опасен: writeOzonSheet_
   // на нуле строк выходит до clearContents(), на листе остаются вчерашние данные,
   // а в отчёт уходило бодрое «✅ +0». Такой прогон честнее показать ошибкой.
-  if (allRows.length === 0) {
+  if (rows.length === 0) {
     throw new Error('OZON вернул 0 строк — лист не перезаписан, на нём остались данные прошлого прогона');
   }
 
-  writeOzonSheet_(ss, cab.sheetName, allRows, headers);
-  return allRows.length;
+  writeOzonSheet_(ss, cab.sheetName, rows, OZON_HEADERS);
+  return rows.length;
+}
+
+/**
+ * Остатки по складам (свободно / готовим / резерв).
+ * @returns {Object} карта «sku|склад» → {sku, offerId, name, warehouse, free, promised, reserved}
+ */
+function fetchOzonOnWarehouses_(cab) {
+  const map    = {};
+  let   offset = 0;
+  const limit  = 1000;
+
+  while (true) {
+    const res = fetchWithRetry(OZON_URL_STOCK_ON_WAREHOUSES, ozonOptions_(cab, {
+      limit: limit, offset: offset, warehouse_type: 'ALL'
+    }));
+
+    const rows = (JSON.parse(res.getContentText()).result || {}).rows || [];
+    if (rows.length === 0) break;
+
+    rows.forEach(r => {
+      map[ozonKey_(r.sku, r.warehouse_name)] = {
+        sku:       r.sku || '',
+        offerId:   r.item_code || '',
+        name:      r.item_name || '',
+        warehouse: r.warehouse_name || '',
+        free:      r.free_to_sell_amount || 0,
+        promised:  r.promised_amount     || 0,
+        reserved:  r.reserved_amount     || 0
+      };
+    });
+
+    offset += rows.length;
+    if (rows.length < limit) break;
+  }
+
+  return map;
+}
+
+/**
+ * Полная картина остатков: в пути, возвраты, брак, ожидание документов, кластер.
+ * @returns {Object} карта «sku|склад» → поля отчёта
+ */
+function fetchOzonAnalyticsStocks_(cab) {
+  const skus = fetchOzonSkus_(cab);
+  const map  = {};
+
+  for (let i = 0; i < skus.length; i += OZON_ANALYTICS_BATCH) {
+    const batch = skus.slice(i, i + OZON_ANALYTICS_BATCH);
+    const res   = fetchWithRetry(OZON_URL_ANALYTICS_STOCKS, ozonOptions_(cab, { skus: batch }));
+    const items = JSON.parse(res.getContentText()).items || [];
+
+    items.forEach(it => {
+      map[ozonKey_(it.sku, it.warehouse_name)] = {
+        sku:                it.sku || '',
+        offerId:            it.offer_id || '',
+        name:               it.name || '',
+        warehouse:          it.warehouse_name || '',
+        cluster:            it.cluster_name || '',
+        available:          it.available_stock_count           || 0,
+        transit:            it.transit_stock_count             || 0,
+        requested:          it.requested_stock_count           || 0,
+        returnFromCustomer: it.return_from_customer_stock_count || 0,
+        returnToSeller:     it.return_to_seller_stock_count    || 0,
+        defectStock:        it.stock_defect_stock_count        || 0,
+        defectTransit:      it.transit_defect_stock_count      || 0,
+        waitingDocs:        it.waiting_docs_stock_count        || 0,
+        other:              it.other_stock_count               || 0
+      };
+    });
+  }
+
+  return map;
+}
+
+/** Собирает все SKU кабинета — отчёт по остаткам требует их списком. */
+function fetchOzonSkus_(cab) {
+  const seen   = {};
+  const skus   = [];
+  let   cursor = '';
+
+  while (true) {
+    const res  = fetchWithRetry(OZON_URL_PRODUCT_STOCKS, ozonOptions_(cab, {
+      cursor: cursor, limit: OZON_PRODUCT_PAGE, filter: {}
+    }));
+    const body  = JSON.parse(res.getContentText());
+    const items = body.items || [];
+
+    items.forEach(it => {
+      (it.stocks || []).forEach(s => {
+        if (s.sku && !seen[s.sku]) { seen[s.sku] = true; skus.push(s.sku); }
+      });
+    });
+
+    // Ozon отдаёт непустой курсор даже на последней (неполной) странице,
+    // поэтому останавливаемся по числу строк, а не только по курсору.
+    cursor = body.cursor || '';
+    if (items.length < OZON_PRODUCT_PAGE || !cursor) break;
+  }
+
+  return skus;
+}
+
+/** Общие параметры запроса к Ozon Seller API. */
+function ozonOptions_(cab, payload) {
+  return {
+    method:      'post',
+    contentType: 'application/json',
+    headers:     { 'client-id': cab.clientId, 'api-key': cab.apiKey },
+    payload:     JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+}
+
+/** Ключ склейки двух источников. Названия складов у ручек различаются регистром. */
+function ozonKey_(sku, warehouseName) {
+  return String(sku) + '|' + String(warehouseName || '').trim().toUpperCase();
 }
 
 /**
@@ -87,7 +216,7 @@ function writeOzonSheet_(ss, name, rows, headers) {
   if (!sheet) {
     sheet = ss.insertSheet(name);
   } else {
-    sheet.clearContents();
+    sheet.clear();
   }
 
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
