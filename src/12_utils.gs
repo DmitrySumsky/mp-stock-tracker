@@ -27,7 +27,9 @@ function fetchWithRetry(url, options, maxRetries) {
     try {
       const res  = UrlFetchApp.fetch(url, options);
       const code = res.getResponseCode();
-      if (code === 200) return res;
+      // Успех — любой 2xx. WB отвечает 204 на пустой отчёт: раньше это уходило
+      // в ретраи и падало «Адрес недоступен (после 3 попыток)».
+      if (code >= 200 && code < 300) return res;
 
       lastError = new Error(`HTTP ${code}: ${extractApiError_(res)}`);
 

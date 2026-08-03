@@ -90,15 +90,19 @@ function fetchWbRemains_(token) {
     if (status === 'purged') throw new Error('Отчёт WB удалён на стороне маркетплейса');
   }
 
-  // Пустое тело на скачивании означает одно из двух (проверено 01.08.2026):
-  // кабинет действительно без остатков — либо кончилась квота отчётов.
+  // Кабинет без остатков: WB отдаёт HTTP 204 без тела (проверено на ИП4 03.08.2026).
+  // Это штатный ответ «строк нет», а не сбой — переспрашивать нечего.
+  const dump = fetchWithRetry(`${WB_REMAINS_URL}/tasks/${taskId}/download`, opts);
+  if (dump.getResponseCode() === 204) return [];
+
+  // Пустое тело при 200 — либо кончилась квота отчётов, либо тот же пустой отчёт.
   // Различаем повтором: отчёт уже готов, ждать его заново не нужно.
-  let body = wbBody_(fetchWithRetry(`${WB_REMAINS_URL}/tasks/${taskId}/download`, opts));
+  let body = wbBody_(dump);
   if (!body) {
     Utilities.sleep(WB_REMAINS_COOLDOWN_MS);
     body = wbBody_(fetchWithRetry(`${WB_REMAINS_URL}/tasks/${taskId}/download`, opts));
   }
-  if (!body) return [];   // дважды пусто — считаем, что остатков нет
+  if (!body) return [];
 
   const data = JSON.parse(body);
   if (!Array.isArray(data)) throw new Error('Отчёт WB вернул не список строк');
