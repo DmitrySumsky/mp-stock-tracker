@@ -15,6 +15,10 @@
 //
 // Раскладка листа: первые 9 колонок оставлены как были (на них могут быть завязаны
 // формулы соседних листов), новые данные дописаны справа.
+//
+// Лист — ИСТОРИЯ, а не снимок «сейчас» (с v3.3.0): каждый прогон дописывает свои
+// строки с датой в колонке A, прошлые дни остаются. Повторный прогон в тот же день
+// переписывает только сегодняшний блок. Чистка старых дней — «Сервис → Очистка данных».
 
 /**
  * Загружает остатки OZON для одного кабинета и записывает в лист.
@@ -78,14 +82,13 @@ function fetchOzon(ss, cab) {
 
   rows.sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'ru', { numeric: true }));
 
-  // Лист перезаписывается снапшотом, поэтому пустой ответ опасен: writeOzonSheet_
-  // на нуле строк выходит до clearContents(), на листе остаются вчерашние данные,
-  // а в отчёт уходило бодрое «✅ +0». Такой прогон честнее показать ошибкой.
+  // Пустой ответ — это не «остатков нет», а несобранный прогон: в отчёт уходило
+  // бодрое «✅ +0», хотя за день в лист не легло ни строки. Показываем ошибкой.
   if (rows.length === 0) {
-    throw new Error('OZON вернул 0 строк — лист не перезаписан, на нём остались данные прошлого прогона');
+    throw new Error('OZON вернул 0 строк — в историю за сегодня ничего не записано');
   }
 
-  writeOzonSheet_(ss, cab.sheetName, rows, OZON_HEADERS);
+  appendOzonSnapshot_(ss, cab.sheetName, rows, OZON_HEADERS);
   return rows.length;
 }
 
@@ -206,19 +209,54 @@ function ozonKey_(sku, warehouseName) {
 }
 
 /**
- * Пишет данные в лист OZON: каждый запуск — снапшот текущего состояния.
- * Очищает лист перед записью, чтобы не накапливались устаревшие строки.
+ * v3.3.0. Дописывает снимок дня в лист OZON, СОХРАНЯЯ прошлые дни.
+ *
+ * До 3.3.0 здесь стоял `sheet.clear()`: каждый прогон стирал всё, что собрали
+ * раньше, и остатки жили ровно до следующего запуска — истории по Ozon не было
+ * вообще, тогда как листы WB её копили. Теперь поведение одинаковое: строки
+ * накапливаются, дата прогона — в колонке A.
+ *
+ * Повторный запуск в тот же день не плодит дубли: строки за сегодняшнее число
+ * сначала удаляются, потом пишется свежий снимок. То есть «последний прогон дня
+ * побеждает», а прошлые дни неприкосновенны.
  */
-function writeOzonSheet_(ss, name, rows, headers) {
+function appendOzonSnapshot_(ss, name, rows, headers) {
   if (rows.length === 0) return;
 
   let sheet = ss.getSheetByName(name);
+
   if (!sheet) {
     sheet = ss.insertSheet(name);
-  } else {
+    writeOzonHeaders_(sheet, headers);
+  } else if (sheet.getLastRow() === 0) {
+    writeOzonHeaders_(sheet, headers);
+  } else if (!ozonHeaderMatches_(sheet, headers)) {
+    // Лист остался от старой раскладки (у ИП4 это англоязычная шапка с датой
+    // в колонке I). Дописывать в него 20 колонок нельзя — данные встанут криво.
+    // Старое содержимое сохраняем отдельной копией и начинаем лист заново.
+    archiveSheetCopy_(ss, sheet);
     sheet.clear();
+    writeOzonHeaders_(sheet, headers);
+  } else {
+    deleteRowsOfDay_(sheet, rows[0][0]);
   }
 
+  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+}
+
+/** Шапка листа остатков: жирная и закреплённая — истории будет много. */
+function writeOzonHeaders_(sheet, headers) {
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
-  sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+  sheet.setFrozenRows(1);
+}
+
+/**
+ * v3.3.0. Совпадает ли шапка листа с ожидаемой.
+ * Сравниваем только первые `headers.length` колонок: справа у владельца могут
+ * быть свои колонки с формулами (на листах WB так и есть), они не мешают.
+ */
+function ozonHeaderMatches_(sheet, headers) {
+  if (sheet.getLastColumn() < headers.length) return false;
+  const actual = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
+  return headers.every((h, i) => String(actual[i]).trim() === h);
 }

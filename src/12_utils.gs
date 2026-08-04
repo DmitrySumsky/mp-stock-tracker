@@ -99,6 +99,73 @@ function writeLog(mp, ip, status, details) {
 }
 
 /**
+ * v3.3.0. Удаляет из листа строки, у которых дата в колонке A — тот же день,
+ * что и `when`. Нужно, чтобы повторный прогон переписывал сегодняшний снимок,
+ * а не дублировал его поверх вчерашнего.
+ *
+ * Строки за один день лежат подряд (их пишет один прогон), но на всякий случай
+ * удаляем блоками снизу вверх — так номера строк выше не съезжают.
+ *
+ * @returns {number} сколько строк удалено
+ */
+function deleteRowsOfDay_(sheet, when) {
+  const last = sheet.getLastRow();
+  if (last < 2) return 0;
+
+  const key = dayKey_(when);
+  if (!key) return 0;   // дату не распознали — лучше ничего не трогать
+
+  const values  = sheet.getRange(2, 1, last - 1, 1).getValues();
+  let   deleted = 0;
+  let   runEnd  = -1;   // индекс нижней строки непрерывного блока за этот день
+
+  for (let i = values.length - 1; i >= -1; i--) {
+    const hit = i >= 0 && dayKey_(values[i][0]) === key;
+    if (hit && runEnd < 0) runEnd = i;
+    if (!hit && runEnd >= 0) {
+      const from  = i + 1;
+      const count = runEnd - from + 1;
+      sheet.deleteRows(from + 2, count);   // +2: строка 1 — шапка, индексы с нуля
+      deleted += count;
+      runEnd = -1;
+    }
+  }
+
+  return deleted;
+}
+
+/**
+ * v3.3.0. День как `yyyy-MM-dd` — из Date, из «dd.MM.yyyy …» или из ISO-строки.
+ * Пустая строка означает «дата не распознана».
+ */
+function dayKey_(value) {
+  if (value instanceof Date) {
+    return Utilities.formatDate(value, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+  const s = String(value || '').trim();
+
+  const ru = s.match(/^(\d{2})\.(\d{2})\.(\d{4})/);
+  if (ru) return `${ru[3]}-${ru[2]}-${ru[1]}`;
+
+  const iso = s.match(/^\d{4}-\d{2}-\d{2}/);
+  return iso ? iso[0] : '';
+}
+
+/**
+ * v3.3.0. Откладывает копию листа перед тем, как переписать его новой раскладкой.
+ * Имя копии уникализируется — за день лист могут пересобрать не один раз.
+ */
+function archiveSheetCopy_(ss, sheet) {
+  const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'dd.MM.yyyy');
+  const base  = `${sheet.getName()} (старый формат ${stamp})`;
+
+  let name = base;
+  for (let n = 2; ss.getSheetByName(name); n++) name = `${base} #${n}`;
+
+  return sheet.copyTo(ss).setName(name);
+}
+
+/**
  * Возвращает лист по имени, создаёт если не существует.
  */
 function getOrCreateSheet_(name) {
