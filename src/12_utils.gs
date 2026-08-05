@@ -65,6 +65,29 @@ function extractApiError_(res) {
 // ─── Работа с листами ────────────────────────────────────
 
 /**
+ * v3.4.0. Досоздаёт строки внизу листа, если снимок в них не помещается.
+ *
+ * Лист остатков растёт каждый день, а сетка Google-таблицы — нет. Когда
+ * свободные строки кончаются, `setValues` за границей сетки падает, и день
+ * просто не загружается (на «Остатки ВБ ИП11» так потерялись 04 и 05.08.2026:
+ * сетка 7725 строк была занята вся, снимок 03.08 влез частично).
+ *
+ * Добавляем не впритык, а с запасом `SHEET_ROW_HEADROOM` — чтобы не дёргать
+ * `insertRowsAfter` каждый прогон.
+ *
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ * @param {number} startRow — первая строка, куда будем писать
+ * @param {number} needRows — сколько строк пишем
+ */
+function ensureCapacity_(sheet, startRow, needRows) {
+  const required = startRow + needRows - 1;
+  const maxRows  = sheet.getMaxRows();
+  if (required <= maxRows) return;
+
+  sheet.insertRowsAfter(maxRows, required - maxRows + SHEET_ROW_HEADROOM);
+}
+
+/**
  * Записывает строки данных в лист (дописывает после существующих).
  * Создаёт лист с заголовками, если он не существует.
  */
@@ -77,13 +100,13 @@ function writeToSheet(ss, name, rows, headers) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   }
 
-  const lastRow = sheet.getLastRow();
+  const lastRow  = sheet.getLastRow();
+  const startRow = lastRow === 0 ? 2 : lastRow + 1;
   if (lastRow === 0) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
-  } else {
-    sheet.getRange(lastRow + 1, 1, rows.length, rows[0].length).setValues(rows);
   }
+  ensureCapacity_(sheet, startRow, rows.length);
+  sheet.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows);
 }
 
 /**

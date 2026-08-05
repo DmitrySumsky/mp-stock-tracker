@@ -75,6 +75,7 @@ function fetchMsStock() {
 
   if (allRows.length > 0) {
     const startRow = sheet.getLastRow() + 1;
+    ensureCapacity_(sheet, startRow, allRows.length);
     sheet.getRange(startRow, 1, allRows.length, MS_SHEET_HEADERS.length).setValues(allRows);
     sheet.getRange(startRow, 10, allRows.length, 3).setNumberFormat('#,##0.00');
   }

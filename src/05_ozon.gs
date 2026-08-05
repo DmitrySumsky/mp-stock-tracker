@@ -241,7 +241,9 @@ function appendOzonSnapshot_(ss, name, rows, headers) {
     deleteRowsOfDay_(sheet, rows[0][0]);
   }
 
-  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+  const startRow = sheet.getLastRow() + 1;
+  ensureCapacity_(sheet, startRow, rows.length);
+  sheet.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows);
 }
 
 /** Шапка листа остатков: жирная и закреплённая — истории будет много. */
