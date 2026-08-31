@@ -47,16 +47,26 @@ const SHEET_ROW_HEADROOM = 2000;
 const OZON_URL_STOCK_ON_WAREHOUSES = 'https://api-seller.ozon.ru/v2/analytics/stock_on_warehouses';
 const OZON_URL_ANALYTICS_STOCKS    = 'https://api-seller.ozon.ru/v1/analytics/stocks';
 const OZON_URL_PRODUCT_STOCKS      = 'https://api-seller.ozon.ru/v4/product/info/stocks';
+const OZON_URL_POSTING_FBO_LIST    = 'https://api-seller.ozon.ru/v2/posting/fbo/list';
 
 const OZON_ANALYTICS_BATCH = 100;   // потолок SKU в одном запросе /v1/analytics/stocks
 const OZON_PRODUCT_PAGE    = 1000;  // размер страницы при сборе номенклатуры
+const OZON_POSTING_PAGE    = 100;   // потолок страницы у /v2/posting/fbo/list
+
+// v3.5.0. «Доставляем покупателям» — товар уехал к покупателю, но не выкуплен.
+// `awaiting_packaging` сюда НЕ входит: он ещё на складе и уже сидит в резерве.
+const OZON_DELIVERING_STATUSES = ['delivering', 'awaiting_deliver'];
+// Глубина просмотра отправлений: доставка в дальние регионы идёт неделями,
+// а фильтр по статусу делает лишние дни бесплатными — отдаются только нужные.
+const OZON_FBO_LOOKBACK_DAYS = 180;
 
 const OZON_HEADERS = [
   'Дата и время', 'Артикул', 'SKU', 'Название товара', 'Склад',
   'Доступно к продаже', 'Готовим к продаже', 'Зарезервировано', 'Всего у OZON',
   'Доступно (аналитика)', 'В пути на склад', 'Заявлено к поставке',
   'Возврат от покупателя', 'Возврат продавцу', 'Брак на складе', 'Брак в пути',
-  'Ждёт документов', 'Прочее', 'Кластер', 'Всего вверено OZON'
+  'Ждёт документов', 'Прочее', 'Доставляем покупателям', 'Кластер',
+  'Всего вверено OZON'
 ];
 
 // ─── Модуль: Wildberries — отчёт «Остатки на складах» ────

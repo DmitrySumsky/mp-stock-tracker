@@ -2,7 +2,7 @@
 // МОДУЛЬ: OZON API — сбор остатков по складам
 // ════════════════════════════════════════════════════════════
 //
-// Источников два, и они дополняют друг друга (сверено на боевом кабинете 03.08.2026):
+// Источников ТРИ, и они дополняют друг друга (сверено с кабинетом 31.08.2026):
 //
 //   /v2/analytics/stock_on_warehouses — свободно / готовим к продаже / резерв,
 //       но показывает ТОЛЬКО склады, где товар физически лежит: ни товаров в пути,
@@ -12,6 +12,11 @@
 //       заявлено к поставке, возвраты от покупателя и продавцу, брак, ожидание
 //       документов, плюс кластер склада. Требует список SKU (пачками до 100),
 //       поэтому сначала собираем номенклатуру через /v4/product/info/stocks.
+//
+//   /v2/posting/fbo/list — «Доставляем покупателям» (v3.5.0). Товар уехал к
+//       покупателю, но ещё не выкуплен: он наш и обязан лежать в запасах, а НИ
+//       ОДНА ручка остатков его не отдаёт — в кабинете это отдельная колонка
+//       отчёта «Управление остатками». Считаем сами по FBO-отправлениям.
 //
 // Раскладка листа: первые 9 колонок оставлены как были (на них могут быть завязаны
 // формулы соседних листов), новые данные дописаны справа.
@@ -29,18 +34,33 @@
 function fetchOzon(ss, cab) {
   if (!cab.clientId || !cab.apiKey) throw new Error('Client ID или API Key пустые');
 
-  const now     = new Date();
-  const onStock = fetchOzonOnWarehouses_(cab);   // ключ: sku|склад
-  const full    = fetchOzonAnalyticsStocks_(cab); // ключ: sku|склад
+  const now       = new Date();
+  const onStock   = fetchOzonOnWarehouses_(cab);   // ключ: sku|склад
+  const full      = fetchOzonAnalyticsStocks_(cab); // ключ: sku|склад
+  const delivering = fetchOzonDelivering_(cab);     // ключ: sku|склад
 
   // Объединяем: строка появляется, если она есть хотя бы в одном источнике
   const keys = {};
-  Object.keys(onStock).forEach(k => { keys[k] = true; });
-  Object.keys(full).forEach(k => { keys[k] = true; });
+  [onStock, full, delivering].forEach(src => {
+    Object.keys(src).forEach(k => { keys[k] = true; });
+  });
+
+  // Артикул и название у «доставляем покупателям» берём по SKU: отправление знает
+  // offer_id, но склад в нём может быть тот, где остатка уже нет ни по одной ручке.
+  const nameBySku = {};
+  Object.keys(keys).forEach(k => {
+    const o = onStock[k] || {}, f = full[k] || {};
+    const sku = o.sku || f.sku;
+    if (sku && !nameBySku[sku] && (o.offerId || f.offerId)) {
+      nameBySku[sku] = { offerId: o.offerId || f.offerId, name: o.name || f.name };
+    }
+  });
 
   const rows = Object.keys(keys).map(key => {
-    const o = onStock[key] || {};
-    const f = full[key]    || {};
+    const o = onStock[key]    || {};
+    const f = full[key]       || {};
+    const d = delivering[key] || {};
+    const byName = nameBySku[o.sku || f.sku || d.sku] || {};
 
     const free     = o.free     || 0;
     const promised = o.promised || 0;
@@ -49,19 +69,28 @@ function fetchOzon(ss, cab) {
     // «Всего у OZON» (колонка 9) сохраняет прежний смысл, чтобы не сломать формулы
     const legacyTotal = free + promised + reserved;
 
+    // v3.5.0. Основа складского остатка. `free_to_sell` УЖЕ содержит товар, на
+    // который создана заявка на вывоз, а аналитика описывает его же отдельным
+    // полем `return_to_seller`: сложение давало двойной счёт (31.08.2026 — 116 шт
+    // по четырём кабинетам). Тождество «Доступно = Аналитика + Возврат продавцу»
+    // проверено построчно, 39 строк из 42 сошлись до штуки.
+    const onHand = Math.max(free, (f.available || 0) + (f.returnToSeller || 0));
+
     // «Всего вверено OZON» — то, что физически у маркетплейса: остатки на складах,
-    // товары в пути, возвраты и брак. «Заявлено к поставке» сюда НЕ входит:
-    // это ещё не отгруженная заявка, её видно отдельной колонкой.
-    const entrusted = Math.max(free, f.available || 0) + promised + reserved +
-      (f.transit || 0) + (f.returnFromCustomer || 0) + (f.returnToSeller || 0) +
-      (f.defectStock || 0) + (f.defectTransit || 0) + (f.waitingDocs || 0) + (f.other || 0);
+    // товары в пути, возвраты, брак и уехавшее к покупателям. «Заявлено к поставке»
+    // сюда НЕ входит: это ещё не отгруженная заявка, её видно отдельной колонкой.
+    const entrusted = onHand + promised + reserved +
+      (f.transit || 0) + (f.returnFromCustomer || 0) +
+      (f.defectStock || 0) + (f.defectTransit || 0) + (f.waitingDocs || 0) +
+      (f.other || 0) + (d.qty || 0);
 
     return [
       now,
-      o.offerId || f.offerId || '',
-      o.sku     || f.sku     || '',
-      o.name    || f.name    || '',
-      o.warehouse || f.warehouse || '',
+      o.offerId || f.offerId || byName.offerId || '',
+      o.sku     || f.sku     || d.sku || '',
+      o.name    || f.name    || byName.name || '',
+      // имя склада из аналитики совпадает с написанием в кабинете — берём его
+      f.warehouse || o.warehouse || d.warehouse || '',
       free,
       promised,
       reserved,
@@ -75,6 +104,7 @@ function fetchOzon(ss, cab) {
       f.defectTransit     || 0,
       f.waitingDocs       || 0,
       f.other             || 0,
+      d.qty               || 0,
       f.cluster           || '',
       entrusted
     ];
@@ -110,15 +140,17 @@ function fetchOzonOnWarehouses_(cab) {
     if (rows.length === 0) break;
 
     rows.forEach(r => {
-      map[ozonKey_(r.sku, r.warehouse_name)] = {
-        sku:       r.sku || '',
-        offerId:   r.item_code || '',
-        name:      r.item_name || '',
-        warehouse: r.warehouse_name || '',
-        free:      r.free_to_sell_amount || 0,
-        promised:  r.promised_amount     || 0,
-        reserved:  r.reserved_amount     || 0
+      const key = ozonKey_(r.sku, r.warehouse_name);
+      const cur = map[key] || {
+        sku: String(r.sku || ''), offerId: '', name: '',
+        warehouse: r.warehouse_name || '', free: 0, promised: 0, reserved: 0
       };
+      cur.offerId  = cur.offerId || r.item_code || '';
+      cur.name     = cur.name    || r.item_name || '';
+      cur.free     += r.free_to_sell_amount || 0;
+      cur.promised += r.promised_amount     || 0;
+      cur.reserved += r.reserved_amount     || 0;
+      map[key] = cur;
     });
 
     offset += rows.length;
@@ -135,6 +167,17 @@ function fetchOzonOnWarehouses_(cab) {
 function fetchOzonAnalyticsStocks_(cab) {
   const skus = fetchOzonSkus_(cab);
   const map  = {};
+  const ADD  = {
+    available:          'available_stock_count',
+    transit:            'transit_stock_count',
+    requested:          'requested_stock_count',
+    returnFromCustomer: 'return_from_customer_stock_count',
+    returnToSeller:     'return_to_seller_stock_count',
+    defectStock:        'stock_defect_stock_count',
+    defectTransit:      'transit_defect_stock_count',
+    waitingDocs:        'waiting_docs_stock_count',
+    other:              'other_stock_count'
+  };
 
   for (let i = 0; i < skus.length; i += OZON_ANALYTICS_BATCH) {
     const batch = skus.slice(i, i + OZON_ANALYTICS_BATCH);
@@ -142,24 +185,74 @@ function fetchOzonAnalyticsStocks_(cab) {
     const items = JSON.parse(res.getContentText()).items || [];
 
     items.forEach(it => {
-      map[ozonKey_(it.sku, it.warehouse_name)] = {
-        sku:                it.sku || '',
-        offerId:            it.offer_id || '',
-        name:               it.name || '',
-        warehouse:          it.warehouse_name || '',
-        cluster:            it.cluster_name || '',
-        available:          it.available_stock_count           || 0,
-        transit:            it.transit_stock_count             || 0,
-        requested:          it.requested_stock_count           || 0,
-        returnFromCustomer: it.return_from_customer_stock_count || 0,
-        returnToSeller:     it.return_to_seller_stock_count    || 0,
-        defectStock:        it.stock_defect_stock_count        || 0,
-        defectTransit:      it.transit_defect_stock_count      || 0,
-        waitingDocs:        it.waiting_docs_stock_count        || 0,
-        other:              it.other_stock_count               || 0
+      const key = ozonKey_(it.sku, it.warehouse_name);
+      const cur = map[key] || {
+        sku: String(it.sku || ''), offerId: '', name: '',
+        warehouse: it.warehouse_name || '', cluster: ''
       };
+      cur.offerId   = cur.offerId || it.offer_id || '';
+      cur.name      = cur.name    || it.name     || '';
+      cur.warehouse = it.warehouse_name || cur.warehouse;
+      cur.cluster   = cur.cluster || it.cluster_name || '';
+      Object.keys(ADD).forEach(k => { cur[k] = (cur[k] || 0) + (it[ADD[k]] || 0); });
+      map[key] = cur;
     });
   }
+
+  return map;
+}
+
+/**
+ * v3.5.0. «Доставляем покупателям» — товар уехал к покупателю, но ещё не выкуплен.
+ *
+ * Ни `stock_on_warehouses`, ни `analytics/stocks` этой цифры не отдают: в кабинете
+ * она живёт отдельной колонкой отчёта «Управление остатками». Сверка 31.08.2026
+ * показала, что без неё баланс недосчитывался 270 шт по пяти кабинетам — самая
+ * крупная из трёх найденных дыр.
+ *
+ * Берутся отправления FBO в двух статусах:
+ *   delivering       — едет к покупателю;
+ *   awaiting_deliver — собрано и ждёт отгрузки со склада Ozon.
+ * Статус `awaiting_packaging` НЕ берётся: этот товар ещё лежит на складе и уже
+ * посчитан в «Зарезервировано» (боевая сверка ИП1 31.08: reserved 13 при 13 шт
+ * в `awaiting_packaging`). Сложение дало бы двойной счёт.
+ *
+ * Склад отправления берётся из `analytics_data.warehouse_name` — написание там
+ * совпадает со складскими ручками, поэтому строка склеивается с остатком, а не
+ * повисает отдельной.
+ *
+ * @returns {Object} карта «sku|склад» → {sku, warehouse, qty}
+ */
+function fetchOzonDelivering_(cab) {
+  const map  = {};
+  const now  = new Date();
+  const from = new Date(now.getTime() - OZON_FBO_LOOKBACK_DAYS * 86400000);
+  const to   = new Date(now.getTime() + 86400000);
+
+  OZON_DELIVERING_STATUSES.forEach(status => {
+    let offset = 0;
+    while (true) {
+      const res = fetchWithRetry(OZON_URL_POSTING_FBO_LIST, ozonOptions_(cab, {
+        dir: 'DESC', limit: OZON_POSTING_PAGE, offset: offset,
+        filter: { since: from.toISOString(), to: to.toISOString(), status: status },
+        with: { analytics_data: true, financial_data: false }
+      }));
+      const list = JSON.parse(res.getContentText()).result || [];
+
+      list.forEach(p => {
+        const wh = ((p.analytics_data || {}).warehouse_name) || '';
+        (p.products || []).forEach(pr => {
+          const key = ozonKey_(pr.sku, wh);
+          const cur = map[key] || { sku: String(pr.sku || ''), warehouse: wh, qty: 0 };
+          cur.qty += pr.quantity || 0;
+          map[key] = cur;
+        });
+      });
+
+      if (list.length < OZON_POSTING_PAGE) break;
+      offset += list.length;
+    }
+  });
 
   return map;
 }
@@ -203,9 +296,22 @@ function ozonOptions_(cab, payload) {
   };
 }
 
-/** Ключ склейки двух источников. Названия складов у ручек различаются регистром. */
+/**
+ * v3.5.0. Ключ склейки источников.
+ *
+ * Названия складов у ручек различаются не только регистром, но и разделителем:
+ * `stock_on_warehouses` отдал «Санкт_Петербург_РФЦ», `analytics/stocks` — тот же
+ * склад как «САНКТ-ПЕТЕРБУРГ_РФЦ». Прежний ключ приводил только к верхнему
+ * регистру, поэтому один склад вставал в лист ДВУМЯ строками и считался дважды
+ * (31.08.2026 — 78 шт по ИП1: Санкт-Петербург, Екатеринбург, Казань).
+ * Нормализуем жёстко: регистр, Ё→Е и прочь всё, что не буква и не цифра.
+ */
 function ozonKey_(sku, warehouseName) {
-  return String(sku) + '|' + String(warehouseName || '').trim().toUpperCase();
+  const wh = String(warehouseName || '')
+    .toUpperCase()
+    .replace(/Ё/g, 'Е')
+    .replace(/[^0-9A-ZА-Я]+/g, '');
+  return String(sku) + '|' + wh;
 }
 
 /**
@@ -232,7 +338,7 @@ function appendOzonSnapshot_(ss, name, rows, headers) {
     writeOzonHeaders_(sheet, headers);
   } else if (!ozonHeaderMatches_(sheet, headers)) {
     // Лист остался от старой раскладки (у ИП4 это англоязычная шапка с датой
-    // в колонке I). Дописывать в него 20 колонок нельзя — данные встанут криво.
+    // в колонке I). Дописывать в него 21 колонку нельзя — данные встанут криво.
     // Старое содержимое сохраняем отдельной копией и начинаем лист заново.
     archiveSheetCopy_(ss, sheet);
     sheet.clear();

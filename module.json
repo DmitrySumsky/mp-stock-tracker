@@ -1,0 +1,27 @@
+{
+  "name": "mp-stock-tracker",
+  "kind": "gas",
+  "standard": "pult@1.0.0",
+  "central": "central/build/central.js",
+  "central_sources": ["central/preamble.js", "central/*.js"],
+  "loader": "loader/loader.gs",
+  "manifest": "loader/appsscript.json",
+  "books": ["17Cws6Sm0Bhv3P-Lm1AiLsqWPRobqVRPFoUANBIVKirg"],
+  "tests": "node tests/run.js",
+  "build": "node tools/build.js",
+  "deploy": "node tools/deploy.js",
+  "deviations": [
+    {
+      "rule": "ПУЛЬТ §2 — 🔴 у пункта, который пишет во внешнюю систему",
+      "why": "красных пунктов нет вообще: книга только ЧИТАЕТ у Ozon, WB и МойСклада, а пишет в саму себя. Отсюда же нет ни сухого прогона, ни журнала отправок — отправлять нечего."
+    },
+    {
+      "rule": "ПУЛЬТ §2 — проверка связи показывает право записи",
+      "why": "право записи не проверяется по той же причине: наружу книга не пишет. Окно показывает наличие ключа, код ответа и его расшифровку."
+    },
+    {
+      "rule": "ПУЛЬТ §12 — модуль лежит в монорепозитории mp-core",
+      "why": "переезд в mp-core не сделан: у проекта свой репозиторий с историей версий и публичной частью. Модуль оформлен по стандарту и готов к переносу — module.json заполнен."
+    }
+  ]
+}
