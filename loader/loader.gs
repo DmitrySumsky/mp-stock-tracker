@@ -19,7 +19,7 @@
 var GH_OWNER  = 'DmitrySumsky';
 var GH_REPO   = 'mp-stock-tracker';
 var GH_FILE   = 'central/build/central.js';
-var GH_BRANCH = 'main';
+var GH_BRANCH = 'master';
 
 /** Ячейка листа «Панель управления» с токеном GitHub. */
 var GH_TOKEN_CELL = 'B6';
