@@ -166,10 +166,56 @@ function deployRepo() {
   console.log('   ✅ центральный код выложен');
 }
 
+/**
+ * Проверка ЖИВОГО файла — ровно то, что сделает книга при первом клике.
+ *
+ * «Успех» — это проверенный результат, а не «git push не упал»: файл может уехать
+ * в другую ветку, отдаться из кэша CDN старым или не резолвить свежую функцию.
+ * Поэтому берём его так же, как лоадер, и достаём каждую точку входа меню.
+ */
+function verifyLive() {
+  const loader = fs.readFileSync(path.join(ROOT, MODULE.loader), 'utf8');
+  const owner = (loader.match(/GH_OWNER\s*=\s*'([^']+)'/) || [])[1];
+  const repo = (loader.match(/GH_REPO\s*=\s*'([^']+)'/) || [])[1];
+  const file = (loader.match(/GH_FILE\s*=\s*'([^']+)'/) || [])[1];
+  const branch = (loader.match(/GH_BRANCH\s*=\s*'([^']+)'/) || [])[1];
+
+  console.log('▸ Живой файл ' + owner + '/' + repo + '@' + branch);
+  return new Promise((resolve, reject) => {
+    https.get({ hostname: 'raw.githubusercontent.com',
+                path: '/' + owner + '/' + repo + '/' + branch + '/' + file },
+      res => {
+        if (res.statusCode !== 200) return reject(new Error('репозиторий отдал ' + res.statusCode +
+          ' — книга получит ту же ошибку'));
+        let src = '';
+        res.on('data', c => { src += c; });
+        res.on('end', () => {
+          const names = new Set();
+          const re = /run_\('([A-Za-z_$][\w$]*)'/g;
+          let m;
+          while ((m = re.exec(loader))) names.add(m[1]);
+          const bad = [];
+          for (const n of names) {
+            let f = null;
+            try {
+              f = new Function(src + '\n;return (typeof ' + n + ' === "function" ? ' + n + ' : null);')();
+            } catch (e) { bad.push(n + ' (' + e.message + ')'); continue; }
+            if (!f) bad.push(n);
+          }
+          if (bad.length) return reject(new Error('в живом файле не резолвятся: ' + bad.join(', ')));
+          console.log('   ' + src.split('\n')[0]);
+          console.log('   ✅ все ' + names.size + ' точек входа резолвятся');
+          resolve();
+        });
+      }).on('error', reject);
+  });
+}
+
 (async () => {
   step('Сборка', 'node', ['tools/build.js']);
   step('Тесты', 'node', ['tests/run.js']);
   if (!ONLY_BOOK) deployRepo();
+  if (PUSH && !ONLY_BOOK) await verifyLive();
   if (!ONLY_REPO) await deployBook();
   if (!PUSH) console.log('\nСухой прогон. Выложить: node tools/deploy.js --push');
 })().catch(e => die(e.message));
