@@ -58,11 +58,51 @@ function ghToken_() {
   return p ? String(p).trim() : '';
 }
 
+/** Кэш кода. У CacheService потолок 100 КБ НА ЗНАЧЕНИЕ, а центральный файл уже 117 КБ
+ *  и будет расти — целиком он не кладётся, и `put` молча отказывает. Поэтому режем на
+ *  куски и храним их число отдельным ключом: потерялся хоть один кусок — считаем, что
+ *  кэша нет, и идём в сеть.
+ *
+ *  Размер куска — в СИМВОЛАХ, а потолок Google — в БАЙТАХ. Комментарии и тексты окон
+ *  здесь кириллические, то есть по два байта на символ: 30 000 символов дают максимум
+ *  60 КБ и в потолок укладываются с запасом даже на сплошной кириллице. */
+var CACHE_CHUNK = 30000;
+var CACHE_TTL   = 1800;
+
+function cacheGetCode_() {
+  try {
+    var c = CacheService.getScriptCache();
+    var n = Number(c.get('central_parts') || 0);
+    if (!n) return '';
+    var keys = [];
+    for (var i = 0; i < n; i++) keys.push('central_' + i);
+    var got = c.getAll(keys);
+    var out = '';
+    for (var j = 0; j < n; j++) {
+      if (got['central_' + j] === undefined || got['central_' + j] === null) return '';
+      out += got['central_' + j];
+    }
+    return out;
+  } catch (e) { return ''; }
+}
+
+function cachePutCode_(src) {
+  try {
+    var c = CacheService.getScriptCache(), map = {}, n = 0;
+    for (var i = 0; i < src.length; i += CACHE_CHUNK) {
+      map['central_' + n] = src.substring(i, i + CACHE_CHUNK);
+      n++;
+    }
+    map.central_parts = String(n);
+    c.putAll(map, CACHE_TTL);
+  } catch (e) { /* не закэшировалось — просто сходим в сеть в следующий раз */ }
+}
+
 /** Центральный код: сначала по токену (у токена своя квота), иначе — публично.
  *  Без токена GitHub даёт 60 запросов в час на IP, а IP у Apps Script общий на
  *  всех — поэтому анонимный путь только запасной, а не основной. */
 function fetchCode_() {
-  var cached = CacheService.getScriptCache().get('central_code');
+  var cached = cacheGetCode_();
   if (cached) return cached;
 
   var tok = ghToken_();
@@ -92,13 +132,19 @@ function fetchCode_() {
 
   // Полчаса кэша: за один сеанс работы человек жмёт несколько пунктов подряд,
   // и каждый из них не должен ходить в GitHub заново.
-  try { CacheService.getScriptCache().put('central_code', src, 1800); } catch (e) {}
+  cachePutCode_(src);
   return src;
 }
 
 /** Сбросить кэш кода — нужен сразу после выкладки новой версии. */
 function dropCodeCache_() {
-  try { CacheService.getScriptCache().remove('central_code'); } catch (e) {}
+  try {
+    var c = CacheService.getScriptCache();
+    var n = Number(c.get('central_parts') || 0);
+    var keys = ['central_parts'];
+    for (var i = 0; i < n; i++) keys.push('central_' + i);
+    c.removeAll(keys);
+  } catch (e) {}
 }
 
 /** Резолв функции центрального кода ПО ИМЕНИ: новая функция не требует правки
