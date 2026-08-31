@@ -58,6 +58,9 @@ class FakeRange {
     return out;
   }
   getValue() { return this.getValues()[0][0]; }
+  // Книга ищет и колонку даты, и строки баланса по ОТОБРАЖАЕМОМУ тексту: в ячейке
+  // шапки лежит серийная дата, а сравнивать надо с «31.08.2026».
+  getDisplayValues() { return this.getValues().map(r => r.map(v => String(v == null ? '' : v))); }
   setValues(values) {
     if (values.length !== this.nr) {
       throw new Error(`setValues: строк ${values.length}, а диапазон на ${this.nr}`);
@@ -488,6 +491,81 @@ function ozonRoutes(warehouses, analytics, postings) {
   eq('данные старого дня сдвинулись вместе с шапкой', sheet.data[1][20], 19);
   const r2 = e.call('upgradeSheets');
   eq('повторная миграция ничего не делает', r2.done, []);
+}
+
+// ─── 13. Дебиторка: остатки кабинетов в баланс ──────────────────────────────
+{
+  const balance = new FakeSheet('Управленческий баланс Авто-тест', [
+    ['Месяц —', 'Начало', '31.08.2026'],
+    ['Дебиторская задолженность', '', ''],
+    ['ИП1', '', ''],
+    ['Остаток на балансе кабинета ВБ', '', 5],
+    ['Ожидаем поступление на РС от ВБ', '', 111],
+    ['Остаток на балансе кабинета ОЗОН', '', 0],
+    ['Ожидаем поступление на РС от ОЗОН', '', 222],
+    ['ИП3', '', ''],
+    ['Остаток на балансе кабинета ВБ', '', 7],
+    ['Остаток на балансе кабинета ОЗОН', '', 0],
+    ['ИП11 50%', '', ''],
+    ['Остаток на балансе кабинета ВБ', '', 0],
+  ]);
+  const panel = new FakeSheet('Панель управления', [
+    [], [], [], [], [], [], [], [],
+    ['OZON', 'ИП1', 'cid', 'key', '', 'Остатки по кластерам ИП1', 'Да', '', '', ''],
+    ['WB',   'ИП1', '', '', 'tok', 'Остатки ВБ ИП1', 'Да', '', '', ''],
+    ['WB',   'ИП3', '', '', 'tok3', 'Остатки ВБ ИП3', 'Да', '', '', ''],
+    ['OZON', 'ИП3', 'cid3', 'key3', '', 'Остатки по кластерам ИП3', 'Нет', '', '', ''],
+    ['WB',   'ИП11', '', '', 'tok11', 'Остатки ВБ ИП11', 'Да', '', '', ''],
+  ]);
+  const e = makeEnv({
+    sheets: { 'Управленческий баланс Авто-тест': balance, 'Панель управления': panel },
+    routes: {
+      'finance-api.wildberries.ru': req => (req.options.headers.Authorization === 'tok'
+        ? { currency: 'RUB', current: 1312834.31, for_withdraw: 0.23 }
+        : { __code: 403, body: { detail: 'scope is not allowed' } }),
+      '/v1/finance/cash-flow-statement/list': {
+        result: { details: [
+          { period: { begin: '2026-08-24T00:00:00Z', end: '2026-08-30T00:00:00Z' }, end_balance_amount: 1083200.38 },
+          { period: { begin: '2026-08-31T00:00:00Z', end: '2026-08-31T00:00:00Z' }, end_balance_amount: 749319.12 },
+        ] } },
+    },
+  });
+
+  const plan = e.call('planCabinetBalances_', '31.08.2026');
+  eq('дебиторка: колонка найдена по дате', plan.col, 3);
+  eq('дебиторка: заполняемых строк', plan.write.length, 2);
+  const wb = plan.write.filter(w => w.mp === 'WB')[0];
+  const oz = plan.write.filter(w => w.mp === 'OZON')[0];
+  eq('WB: берётся current', wb.value, 1312834.31);
+  eq('WB: строка своего блока', [wb.row, wb.ip], [4, 'ИП1']);
+  eq('Ozon: берётся САМЫЙ СВЕЖИЙ период, а не первый', oz.value, 749319.12);
+  eq('Ozon: строка своего блока', [oz.row, oz.ip], [6, 'ИП1']);
+  eq('прежнее значение прочитано', wb.was, 5);
+
+  const why = {};
+  plan.skip.forEach(s => { why[s.ip + '|' + s.mp] = s.why; });
+  ok('403 у WB объяснён правами, а не кодом', /категории «Финансы»/.test(why['ИП3|WB']), why['ИП3|WB']);
+  ok('выключенный кабинет пропущен', /выключен/.test(why['ИП3|OZON']), why['ИП3|OZON']);
+  eq('строк «Ожидаем поступление» в плане нет',
+     plan.write.concat(plan.skip).filter(x => x.row === 5 || x.row === 7).length, 0);
+  eq('ИП11 распознан, доля помечена', plan.skip.filter(s => s.ip === 'ИП11').length, 1);
+
+  // ключевое: пропущенная ячейка НЕ обнуляется
+  const before = balance.data[8][2];
+  e.call('syncCabinetBalances');
+  eq('без подтверждения ничего не записано (prompt отменён)', balance.data[3][2], 5);
+  eq('ячейка кабинета без прав не тронута', balance.data[8][2], before);
+
+  const prev = e.call('previewCabinetBalances', 'v3.6.0');
+  ok('предпросмотр отдаёт html', /<table>/.test(prev.html));
+  ok('в предпросмотре объяснено, почему «Ожидаем поступление» пусто',
+     /Ожидаем поступление/.test(prev.html));
+  ok('в запасном тексте есть итог', /Итого/.test(prev.text));
+
+  const e2 = makeEnv({ sheets: { 'Панель управления': panel } });
+  let msg = '';
+  try { e2.call('planCabinetBalances_', '01.01.2030'); } catch (err) { msg = err.message; }
+  ok('нет колонки с датой — понятная ошибка', /нет колонки 01\.01\.2030/.test(msg), msg);
 }
 
 // ─── итог ───────────────────────────────────────────────────────────────────

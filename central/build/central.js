@@ -1,4 +1,41 @@
-/* MP STOCK TRACKER — CENTRAL CODE v3.5.0 — 31.08.2026 */
+/* MP STOCK TRACKER — CENTRAL CODE v3.6.0 — 31.08.2026 */
+/* v3.6.0: ДЕБИТОРКА ПО КАБИНЕТАМ ЗАПОЛНЯЛАСЬ РУКАМИ И ПОТОМУ НЕ ЗАПОЛНЯЛАСЬ
+   (запрос владельца в тот же день: «нужно ещё подтянуть данные по статьям
+   Дебиторская задолженность, Остаток на балансе кабинета ВБ / ОЗОН, Ожидаем
+   поступление на РС»).
+
+   ЧТО БЫЛО. В свежей колонке баланса все десять блоков ИП стояли по нулю, хотя
+   площадки должны холдингу больше двух миллионов: цифры переносились из кабинетов
+   вручную и на последний срез просто не попали.
+
+   ЧТО СТАЛО. Пункт «3️⃣ 💰 Остатки кабинетов в дебиторку» (`14_receivables.js`):
+   • WB — `finance-api…/v1/account/balance`, поле `current`. Требует у токена
+     категорию «Финансы»: токен под «Статистику» и «Аналитику» отвечает 403
+     `scope is not allowed`;
+   • Ozon — `/v1/finance/cash-flow-statement/list` с `with_details`, поле
+     `end_balance_amount` САМОГО СВЕЖЕГО периода. Именно оно ведёт себя как «Баланс»
+     кабинета: пока неделя не закрыта, Ozon отдаёт отдельный период «сегодня…сегодня».
+     Спрашивать прошедшую дату бесполезно — на середину недели возвращается период
+     целиком, вместе с ещё не наступившими днями;
+   • строки ищутся ПО НАЗВАНИЮ и привязываются к блоку ИП по заголовку выше — номера
+     в балансе не зашиты, туда регулярно вставляют строки;
+   • кабинет, чей ключ отказал, ПРОПУСКАЕТСЯ с причиной словами, а ячейка остаётся
+     как была. Обнулить чужую цифру из-за протухшего токена — худшее, что тут можно
+     сделать: ноль в балансе неотличим от факта;
+   • сухой прогон и подтверждение С ЦИФРОЙ до записи, каждая строка — в «Лог»;
+   • заголовок блока с долей («ИП11 50%») распознаётся и помечается: строка называет
+     ПОЛНЫЙ остаток кабинета, а решение о доле принимает владелец, не скрипт.
+
+   ЧЕГО СКРИПТ НЕ ДЕЛАЕТ И ПОЧЕМУ. Строки «Ожидаем поступление на РС от ВБ / ОЗОН»
+   не заполняются вовсе. Это деньги, которые площадка уже отправила, но которые ещё
+   не дошли до счёта, и публичного метода для них нет НИ У ОДНОЙ площадки (проверено
+   31.08.2026: у WB `…/withdrawals`, `…/payments`, `…/account/withdrawal` — 404;
+   у Ozon `payments` отчёта о взаиморасчётах это УЖЕ сделанные выплаты, а
+   `/v1/finance/payouts` и `/v1/finance/treasury/totals` не существуют). Единственный
+   источник статуса заявки — личный кабинет. Пустая ячейка честнее выдуманной, и это
+   написано в инструкции, чтобы через месяц не искать заново.
+   Тесты: 63/63 (+17).
+*/
 /* v3.5.0: ЗАПАСЫ OZON В БАЛАНСЕ БЫЛИ НЕВЕРНЫ ТРИЖДЫ, И КНИГА ПЕРЕЕХАЛА НА «ПУЛЬТ»
    (сверка блока остатков Ozon с кабинетом, 31.08.2026: «корректные ли данные даёт
    скрипт?» — нет, и ошибка не односторонняя: по ИП1 и ИП6 занижено, по ИП3, ИП5,
@@ -161,6 +198,23 @@ const MS_SHEET_HEADERS = [
 const SHEET_CREDITS       = 'Кредиты Import';
 const SHEET_BALANCE       = 'Управленческий баланс';
 const BALANCE_TOTAL_LABEL = 'Кредиты банков';
+
+// ─── Модуль: Дебиторка — остатки кабинетов ───────────────
+//
+// Листы баланса перебираются по порядку: берётся первый, где есть колонка с нужной
+// датой. Свежие срезы владелец ведёт в «Авто-тест», поэтому он первый.
+//
+const BALANCE_SHEETS = ['Управленческий баланс Авто-тест', 'Управленческий баланс'];
+
+const ROW_BALANCE_WB    = 'Остаток на балансе кабинета ВБ';
+const ROW_BALANCE_OZON  = 'Остаток на балансе кабинета ОЗОН';
+
+// «Остаток на балансе» — это долг площадки кабинету. Ozon отдаёт его как остаток на
+// конец периода в отчёте о взаиморасчётах, WB — отдельной ручкой с категорией «Финансы».
+const WB_BALANCE_URL      = 'https://finance-api.wildberries.ru/api/v1/account/balance';
+const OZON_URL_CASH_FLOW  = 'https://api-seller.ozon.ru/v1/finance/cash-flow-statement/list';
+// Три недели назад — чтобы в ответ гарантированно попал незакрытый период «сегодня».
+const OZON_CASHFLOW_LOOKBACK_DAYS = 21;
 
 const CR_HEADERS = {
   PRINCIPAL:   'Основной долг',
@@ -2127,7 +2181,14 @@ function panelHelp(version) {
     ['2️⃣ Обновить остатки МойСклад',
      'Отдельная кнопка: МойСклад отвечает медленнее маркетплейсов, и держать его ' +
      'в общем прогоне значит рисковать шестиминутным лимитом.'],
-    ['3️⃣ Кредиты в баланс',
+    ['3️⃣ Остатки кабинетов в дебиторку',
+     'Спрашивает дату колонки баланса, собирает по всем кабинетам долг площадки ' +
+     '(WB — «Баланс» кабинета, Ozon — остаток отчёта о взаиморасчётах), показывает ' +
+     'сухой прогон и после подтверждения пишет строки «Остаток на балансе кабинета ' +
+     'ВБ/ОЗОН». Кабинет, чей ключ отказал, пропускается — ячейка остаётся как была, ' +
+     'а не обнуляется. Осмысленна только СЕГОДНЯШНЯЯ дата: истории по остатку ' +
+     'кабинета площадки не отдают.'],
+    ['4️⃣ Кредиты в баланс',
      'Переносит остаток основного долга из листа «Кредиты Import» в строки ' +
      'управленческого баланса. Работает только если лист заполнен и заполнено ' +
      'соответствие названий кредитов строкам баланса.']
@@ -2140,6 +2201,12 @@ function panelHelp(version) {
     ['Доставляем покупателям', 'товар уехал к покупателю, но ещё не выкуплен. Считается по отправлениям FBO, ни одна ручка остатков его не отдаёт.'],
     ['Всего у OZON', 'старая колонка: доступно + готовим + резерв. Оставлена ради формул соседних листов.'],
     ['Всего вверено OZON', 'ИТОГ, который идёт в баланс: всё, что физически у маркетплейса. «Заявлено к поставке» сюда не входит — этот товар ещё на нашем складе.']
+  ];
+
+  const rows = [
+    ['Остаток на балансе кабинета ВБ / ОЗОН', 'долг площадки кабинету. Заполняет пункт 3️⃣ по API.'],
+    ['Ожидаем поступление на РС от ВБ / ОЗОН', 'деньги, которые площадка уже отправила, но которые ещё не дошли до счёта. Публичного метода для них нет НИ У ОДНОЙ площадки — ставит человек по личному кабинету.'],
+    ['Дебиторская задолженность, итоги по ИП', 'формулы, считаются сами.']
   ];
 
   const html = pultPage_('📖 Как работать', [
@@ -2161,6 +2228,10 @@ function panelHelp(version) {
     '<table><tr><th>Колонка</th><th>Что это на самом деле</th></tr>',
     cols.map(c => '<tr><td>' + pultEsc_(c[0]) + '</td><td>' + pultEsc_(c[1]) + '</td></tr>').join(''),
     '</table>',
+    '<h2>Строки дебиторки в балансе</h2>',
+    '<table><tr><th>Строка</th><th>Откуда берётся</th></tr>',
+    rows.map(r => '<tr><td>' + pultEsc_(r[0]) + '</td><td>' + pultEsc_(r[1]) + '</td></tr>').join(''),
+    '</table>',
     '<h2>Если что-то пошло не так</h2><ol>' +
     '<li>Откройте «📊 Что сейчас происходит» — окно называет одно действие.</li>' +
     '<li>Ключ не принят — «🔌 Проверка связи» покажет, какой именно кабинет и с ' +
@@ -2179,7 +2250,11 @@ function panelHelp(version) {
     '   пишет по листу на кабинет, дата прогона в колонке A. Повтор за тот же',
     '   день переписывает только сегодняшний блок.',
     '2) Обновить остатки МойСклад — отдельной кнопкой (он медленнее).',
-    '3) Кредиты в баланс — из листа «Кредиты Import» в строки баланса.',
+    '3) Остатки кабинетов в дебиторку — долг WB и Ozon кабинету на СЕГОДНЯ;',
+    '   кабинет с отказавшим ключом пропускается, ячейка не обнуляется.',
+    '   «Ожидаем поступление на РС» скрипт не заполняет: метода нет ни у одной',
+    '   площадки, эти строки ставит человек по личному кабинету.',
+    '4) Кредиты в баланс — из листа «Кредиты Import» в строки баланса.',
     '',
     'ПРАВИЛО: ключи кабинетов живут только на листе «Панель управления».',
     '',
@@ -2381,5 +2456,268 @@ function upgradeSheets() {
   SpreadsheetApp.getUi().alert('⚙️ Обновление настроек таблицы', msg,
     SpreadsheetApp.getUi().ButtonSet.OK);
   return { done: done, skip: skip };
+}
+
+// ══════ 14_receivables.js ═════════════════════════════
+// ════════════════════════════════════════════════════════════
+// МОДУЛЬ: Дебиторка — остатки кабинетов маркетплейсов в баланс
+// ════════════════════════════════════════════════════════════
+//
+// Заполняет в блоке «Дебиторская задолженность» управленческого баланса две строки
+// на каждый кабинет:
+//   «Остаток на балансе кабинета ВБ»   — сколько Wildberries должен кабинету,
+//   «Остаток на балансе кабинета ОЗОН» — сколько Ozon должен кабинету.
+// Сама «Дебиторская задолженность» и итоги по ИП — формулы, они пересчитаются сами.
+//
+// ЧЕГО ЗДЕСЬ НЕТ И ПОЧЕМУ. Строки «Ожидаем поступление на РС от ВБ / от ОЗОН» модуль
+// НЕ ТРОГАЕТ. Это деньги, которые площадка уже отправила, но которые ещё не дошли до
+// расчётного счёта, и ни один публичный метод их не отдаёт (проверено 31.08.2026:
+// у WB живёт только `/account/balance`, остальные пути 404; у Ozon `payments` в отчёте
+// о взаиморасчётах — это УЖЕ сделанные выплаты за период, а `/v1/finance/payouts` не
+// существует). Единственный источник — срез личного кабинета. Пустая ячейка честнее
+// выдуманной, поэтому эти строки остаются человеку.
+//
+// Строки ищутся ПО НАЗВАНИЮ и привязываются к блоку ИП по заголовку выше — номера
+// строк не зашиты: в баланс регулярно вставляют новые строки.
+
+/**
+ * Остаток кабинета Wildberries.
+ * Требует у токена категорию «Финансы»: токен, выпущенный под «Статистику» и
+ * «Аналитику», отвечает 403 `scope is not allowed` — это не поломка, а недостающее
+ * право, и такой кабинет мы пропускаем, НЕ обнуляя ячейку.
+ */
+function fetchWbAccountBalance_(cab) {
+  const res = fetchWithRetry(WB_BALANCE_URL, {
+    method: 'get', headers: { Authorization: cab.token }, muteHttpExceptions: true
+  }, 2);
+  const body = JSON.parse(res.getContentText() || '{}');
+  return { value: Number(body.current) || 0, extra: Number(body.for_withdraw) || 0 };
+}
+
+/**
+ * Остаток кабинета Ozon — `end_balance_amount` САМОГО СВЕЖЕГО периода отчёта о
+ * взаиморасчётах. Именно оно ведёт себя как «Баланс» в кабинете: пока неделя не
+ * закрыта, Ozon отдаёт отдельный период «сегодня…сегодня» с текущим остатком.
+ * Спрашивать прошедшую дату бесполезно — на середину недели возвращается период
+ * целиком, вместе с ещё не наступившими днями.
+ */
+function fetchOzonAccountBalance_(cab) {
+  const to   = new Date();
+  const from = new Date(to.getTime() - OZON_CASHFLOW_LOOKBACK_DAYS * 86400000);
+  const res  = fetchWithRetry(OZON_URL_CASH_FLOW, ozonOptions_(cab, {
+    date: { from: from.toISOString(), to: to.toISOString() },
+    page: 1, page_size: 50, with_details: true
+  }));
+  const details = ((JSON.parse(res.getContentText() || '{}').result) || {}).details || [];
+  if (details.length === 0) throw new Error('отчёт о взаиморасчётах пуст');
+
+  let last = details[0];
+  details.forEach(d => {
+    if (String(d.period.end) > String(last.period.end)) last = d;
+  });
+  return { value: Number(last.end_balance_amount) || 0,
+           period: String(last.period.begin).slice(0, 10) + '…' + String(last.period.end).slice(0, 10) };
+}
+
+/** Собирает остатки по всем кабинетам панели. Пропуск — с причиной словами. */
+function collectCabinetBalances_() {
+  const out = [];
+  loadCabinets().forEach(cab => {
+    const row = { mp: cab.mp, ip: cab.id };
+    if (!cab.active) { row.skip = 'кабинет выключен в панели'; out.push(row); return; }
+    try {
+      if (cab.mp === 'WB') {
+        if (!cab.token) { row.skip = 'токен не заполнен'; out.push(row); return; }
+        const r = fetchWbAccountBalance_(cab);
+        row.value = r.value;
+        row.note  = 'можно вывести ' + formatNumber(r.extra) + ' ₽';
+      } else if (cab.mp === 'OZON') {
+        if (!cab.clientId || !cab.apiKey) { row.skip = 'ключи не заполнены'; out.push(row); return; }
+        const r = fetchOzonAccountBalance_(cab);
+        row.value = r.value;
+        row.note  = r.period;
+      } else {
+        row.skip = 'неизвестный маркетплейс';
+      }
+    } catch (e) {
+      row.skip = receivablesReason_(cab.mp, e.message);
+    }
+    out.push(row);
+  });
+  return out;
+}
+
+/** Текст отказа маркетплейса — словами, а не кодом. */
+function receivablesReason_(mp, message) {
+  const text = String(message || '');
+  if (text.indexOf('403') >= 0) {
+    return mp === 'WB'
+      ? 'у токена нет категории «Финансы» — перевыпустить в ЛК'
+      : 'у ключа нет прав на финансы — перевыпустить в кабинете';
+  }
+  if (text.indexOf('401') >= 0) return 'токен отозван или истёк';
+  if (text.indexOf('429') >= 0) return 'кабинет под лимитером — повторить позже';
+  return text.slice(0, 120);
+}
+
+/** Лист баланса: берём первый, где есть колонка с нужной датой. */
+function findBalanceSheet_(ss, wantDate) {
+  for (let i = 0; i < BALANCE_SHEETS.length; i++) {
+    const sheet = ss.getSheetByName(BALANCE_SHEETS[i]);
+    if (!sheet) continue;
+    const header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
+    for (let c = 0; c < header.length; c++) {
+      if (String(header[c]).trim() === wantDate) return { sheet: sheet, col: c + 1 };
+    }
+  }
+  return null;
+}
+
+/**
+ * Строки «Остаток на балансе кабинета …» с привязкой к блоку ИП.
+ * Хвост заголовка блока («ИП11 50%») возвращается отдельно: он означает долю
+ * холдинга в проекте, а строка называет ПОЛНЫЙ остаток кабинета. Путать нельзя,
+ * и решение о доле принимает владелец, а не скрипт.
+ */
+function findReceivableRows_(sheet) {
+  const last = sheet.getLastRow();
+  const col  = sheet.getRange(1, 1, last, 1).getDisplayValues();
+  const out  = [];
+  let block = '', share = '';
+  for (let i = 0; i < col.length; i++) {
+    const a = String(col[i][0]).trim();
+    if (!a) continue;
+    const m = a.match(/^ИП\s*(\d+)\s*(.*)$/);
+    if (m) { block = 'ИП' + m[1]; share = m[2].trim() ? a : ''; continue; }
+    if (!block) continue;
+    if (a === ROW_BALANCE_WB)  out.push({ row: i + 1, ip: block, mp: 'WB',   share: share });
+    if (a === ROW_BALANCE_OZON) out.push({ row: i + 1, ip: block, mp: 'OZON', share: share });
+  }
+  return out;
+}
+
+/** План записи: что и куда встанет, что пропущено и почему. */
+function planCabinetBalances_(wantDate) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const target = findBalanceSheet_(ss, wantDate);
+  if (!target) {
+    throw new Error('Ни в одном листе баланса нет колонки ' + wantDate +
+      '. Листы, где искали: ' + BALANCE_SHEETS.join(', '));
+  }
+  const got = {};
+  collectCabinetBalances_().forEach(r => { got[r.mp + '|' + r.ip] = r; });
+
+  const rows = findReceivableRows_(target.sheet);
+  const write = [], skip = [];
+  rows.forEach(r => {
+    const info = got[r.mp + '|' + r.ip];
+    const was = Number(target.sheet.getRange(r.row, target.col).getValue()) || 0;
+    if (!info) { skip.push({ row: r.row, ip: r.ip, mp: r.mp, why: 'кабинета нет в «Панели управления»' }); return; }
+    if (info.skip) { skip.push({ row: r.row, ip: r.ip, mp: r.mp, why: info.skip }); return; }
+    write.push({ row: r.row, ip: r.ip, mp: r.mp, was: was, value: info.value,
+                 note: info.note || '', share: r.share });
+  });
+  return { sheet: target.sheet, col: target.col, date: wantDate, write: write, skip: skip };
+}
+
+/** Дата по умолчанию — сегодня: остатки кабинета API отдаёт только «на сейчас». */
+function receivablesToday_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'dd.MM.yyyy');
+}
+
+/**
+ * Пункт меню: собрать остатки кабинетов и записать в дебиторку баланса.
+ * Сухой прогон и подтверждение С ЦИФРОЙ — до записи, а не после.
+ */
+function syncCabinetBalances() {
+  const ui = SpreadsheetApp.getUi();
+  const ask = ui.prompt('💰 Остатки кабинетов в дебиторку',
+    'Дата колонки баланса (ДД.ММ.ГГГГ).\n\nОстатки кабинетов площадки отдают только ' +
+    '«на сейчас» — истории по балансу нет ни у WB, ни у Ozon, поэтому осмысленна ' +
+    'только сегодняшняя дата.\n\nПо умолчанию: ' + receivablesToday_(),
+    ui.ButtonSet.OK_CANCEL);
+  if (ask.getSelectedButton() !== ui.Button.OK) return;
+
+  const wantDate = String(ask.getResponseText() || '').trim() || receivablesToday_();
+  const plan = planCabinetBalances_(wantDate);
+
+  if (plan.write.length === 0) {
+    ui.alert('💰 Остатки кабинетов',
+      'Записывать нечего.\n\n' + skipText_(plan.skip), ui.ButtonSet.OK);
+    return;
+  }
+
+  let sum = 0;
+  plan.write.forEach(w => { sum += w.value; });
+  const preview = plan.write.map(w =>
+    '  стр ' + w.row + '  ' + w.ip + ' ' + w.mp + ':  ' +
+    formatNumber(w.was) + ' → ' + formatNumber(w.value) +
+    (w.share ? '   ⚠ блок «' + w.share + '» — пишем ПОЛНЫЙ остаток кабинета' : '')
+  ).join('\n');
+
+  const answer = ui.alert('Записать ' + plan.write.length + ' значений на сумму ' +
+    formatNumber(sum) + ' ₽?',
+    'Лист «' + plan.sheet.getName() + '», колонка ' + colLetter(plan.col) + ' (' + wantDate + ')\n\n' +
+    preview + '\n\n' + skipText_(plan.skip), ui.ButtonSet.YES_NO);
+  if (answer !== ui.Button.YES) return;
+
+  plan.write.forEach(w => { plan.sheet.getRange(w.row, plan.col).setValue(w.value); });
+  plan.write.forEach(w => writeLog(w.mp, w.ip, 'Успех',
+    'дебиторка ' + wantDate + ': ' + formatNumber(w.value) + ' ₽'));
+  plan.skip.forEach(s => writeLog(s.mp, s.ip, 'Пропуск', 'дебиторка ' + wantDate + ': ' + s.why));
+
+  ui.alert('💰 Готово',
+    'Записано ' + plan.write.length + ' значений на ' + formatNumber(sum) + ' ₽.\n\n' +
+    'Строки «Ожидаем поступление на РС» не заполнялись: публичный API площадок ' +
+    'статуса выплаты не отдаёт, их ставит человек.\n\n' + skipText_(plan.skip),
+    ui.ButtonSet.OK);
+}
+
+function skipText_(skip) {
+  if (!skip.length) return 'Пропущенных кабинетов нет.';
+  return 'Не тронуто (ячейка остаётся как была):\n' +
+    skip.map(s => '  стр ' + s.row + '  ' + s.ip + ' ' + s.mp + ' — ' + s.why).join('\n');
+}
+
+/** Окно «что встанет», без записи. Рисует лоадер — здесь только {html, text}. */
+function previewCabinetBalances(version) {
+  const wantDate = receivablesToday_();
+  let plan;
+  try {
+    plan = planCabinetBalances_(wantDate);
+  } catch (e) {
+    const msg = String(e.message || e);
+    return { html: pultPage_('💰 Остатки кабинетов', '<div class="warn">' + pultEsc_(msg) + '</div>', version),
+             text: msg };
+  }
+
+  let sum = 0;
+  plan.write.forEach(w => { sum += w.value; });
+
+  const html = pultPage_('💰 Остатки кабинетов в дебиторку', [
+    '<div class="act">Лист «' + pultEsc_(plan.sheet.getName()) + '», колонка ' +
+    colLetter(plan.col) + ' (' + pultEsc_(wantDate) + '). Готово к записи: <b>' +
+    plan.write.length + '</b> значений на <b>' + formatNumber(sum) + ' ₽</b>. ' +
+    'Записывает пункт «4️⃣ 💰 Остатки кабинетов в дебиторку».</div>',
+    '<table><tr><th>стр</th><th>ИП</th><th>МП</th><th>было</th><th>станет</th><th>источник</th></tr>',
+    plan.write.map(w => '<tr><td>' + w.row + '</td><td>' + pultEsc_(w.ip) + '</td><td>' +
+      w.mp + '</td><td>' + formatNumber(w.was) + '</td><td><b>' + formatNumber(w.value) +
+      '</b></td><td>' + pultEsc_(w.note) + (w.share ? ' ⚠ блок «' + pultEsc_(w.share) +
+      '» — пишем полный остаток' : '') + '</td></tr>').join(''),
+    '</table>',
+    plan.skip.length ? '<h2>Не тронуто</h2><table><tr><th>стр</th><th>ИП</th><th>МП</th><th>почему</th></tr>' +
+      plan.skip.map(s => '<tr><td>' + s.row + '</td><td>' + pultEsc_(s.ip) + '</td><td>' +
+        s.mp + '</td><td>' + pultEsc_(s.why) + '</td></tr>').join('') + '</table>' : '',
+    '<div class="warn"><b>«Ожидаем поступление на РС» скрипт не заполняет.</b> Это деньги, ' +
+    'которые площадка уже отправила, но которые ещё не дошли до счёта, и публичного метода ' +
+    'для них нет ни у WB, ни у Ozon — единственный источник статуса выплаты это личный ' +
+    'кабинет. Пустая ячейка честнее выдуманной.</div>'
+  ].join(''), version);
+
+  const text = ['ОСТАТКИ КАБИНЕТОВ В ДЕБИТОРКУ', wantDate, '',
+    plan.write.map(w => `  стр ${w.row} ${w.ip} ${w.mp}: ${formatNumber(w.was)} → ${formatNumber(w.value)}`).join('\n'),
+    '', 'Итого: ' + formatNumber(sum) + ' ₽', '', skipText_(plan.skip)].join('\n');
+
+  return { html: html, text: text };
 }
 

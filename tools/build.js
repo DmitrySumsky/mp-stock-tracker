@@ -28,6 +28,7 @@ const ENTRY_POINTS = [
   'setupTriggers', 'removeTriggers', 'cleanupOldData', 'patchPanel',
   'migrateFromOldConfig', 'initPanel',
   'panelHelp', 'panelStatus', 'panelCheckConnection', 'upgradeSheets',
+  'syncCabinetBalances', 'previewCabinetBalances',
 ];
 
 // Скан утечек. Секрет в коде — это отказ сборки: ключи живут только на листе книги

@@ -183,7 +183,8 @@ function onOpen() {
   ui.createMenu('📦 Остатки и баланс')
     .addItem('1️⃣ 🔄 Обновить остатки — все кабинеты', 'runAllSupplyFunctions')
     .addItem('2️⃣ 🏪 Обновить остатки МойСклад',        'fetchMsStock')
-    .addItem('3️⃣ 💳 Кредиты в баланс…',                'syncCreditsToBalance')
+    .addItem('3️⃣ 💰 Остатки кабинетов в дебиторку…',   'syncCabinetBalances')
+    .addItem('4️⃣ 💳 Кредиты в баланс…',                'syncCreditsToBalance')
     .addSeparator()
     .addItem('📖 Как работать (инструкция)', 'mHelp')
     .addItem('📊 Что сейчас происходит',     'mStatus')
@@ -199,6 +200,7 @@ function onOpen() {
       .addItem('Обновить дашборд',          'updateDashboard')
       .addItem('Экспорт дашборда в CSV',    'exportDashboardCSV')
       .addItem('Проверить низкие остатки',  'checkLowStock')
+      .addItem('Предпросмотр остатков кабинетов', 'mCabinets')
       .addItem('Предпросмотр кредитов',     'previewCreditsSync')
       .addItem('Кредиты в конкретный столбец…', 'syncCreditsToSpecificColumn'))
     .addSubMenu(ui.createMenu('⏰ Автозапуск')
@@ -235,6 +237,8 @@ function previewCreditsSync()          { return run_('previewCreditsSync'); }
 function syncCreditsToBalance()        { return run_('syncCreditsToBalance'); }
 function syncCreditsToSpecificColumn() { return run_('syncCreditsToSpecificColumn'); }
 
+function syncCabinetBalances() { return run_('syncCabinetBalances'); }
+
 function updateDashboard()    { return run_('updateDashboard'); }
 function exportDashboardCSV() { return run_('exportDashboardCSV'); }
 function checkLowStock()      { return run_('checkLowStock'); }
@@ -251,6 +255,7 @@ function mUpgrade() { dropCodeCache_(); return run_('upgradeSheets'); }
 
 function mHelp()   { showHtml_(run_('panelHelp',   [centralVersion_()]), '📖 Как работать', 900, 700); }
 function mStatus() { showHtml_(run_('panelStatus', [centralVersion_()]), '📊 Что сейчас происходит', 860, 620); }
+function mCabinets() { showHtml_(run_('previewCabinetBalances', [centralVersion_()]), '💰 Остатки кабинетов', 900, 640); }
 
 function mVersion() {
   var ui = SpreadsheetApp.getUi();

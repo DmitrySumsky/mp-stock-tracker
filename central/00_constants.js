@@ -105,6 +105,23 @@ const SHEET_CREDITS       = 'Кредиты Import';
 const SHEET_BALANCE       = 'Управленческий баланс';
 const BALANCE_TOTAL_LABEL = 'Кредиты банков';
 
+// ─── Модуль: Дебиторка — остатки кабинетов ───────────────
+//
+// Листы баланса перебираются по порядку: берётся первый, где есть колонка с нужной
+// датой. Свежие срезы владелец ведёт в «Авто-тест», поэтому он первый.
+//
+const BALANCE_SHEETS = ['Управленческий баланс Авто-тест', 'Управленческий баланс'];
+
+const ROW_BALANCE_WB    = 'Остаток на балансе кабинета ВБ';
+const ROW_BALANCE_OZON  = 'Остаток на балансе кабинета ОЗОН';
+
+// «Остаток на балансе» — это долг площадки кабинету. Ozon отдаёт его как остаток на
+// конец периода в отчёте о взаиморасчётах, WB — отдельной ручкой с категорией «Финансы».
+const WB_BALANCE_URL      = 'https://finance-api.wildberries.ru/api/v1/account/balance';
+const OZON_URL_CASH_FLOW  = 'https://api-seller.ozon.ru/v1/finance/cash-flow-statement/list';
+// Три недели назад — чтобы в ответ гарантированно попал незакрытый период «сегодня».
+const OZON_CASHFLOW_LOOKBACK_DAYS = 21;
+
 const CR_HEADERS = {
   PRINCIPAL:   'Основной долг',
   CREDIT_NAME: 'Кредит',
