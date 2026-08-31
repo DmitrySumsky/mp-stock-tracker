@@ -159,8 +159,16 @@ function deployRepo() {
   if (!PUSH) { console.log('   (сухой прогон — коммит и push не делались)'); return; }
 
   execFileSync('git', ['add', '-A'], { cwd: ROOT, stdio: 'inherit' });
-  const msg = 'feat(ozon): остатки считаются верно — склад под двумя именами, ' +
-              'двойной вывоз и «доставляем покупателям»\n\n' + version;
+  // Тема коммита берётся из ПЕРВОЙ строки свежего блока истории версий: зашитый в
+  // деплой текст один раз уже соврал про содержимое коммита (v3.6.0 уехала под
+  // заголовком v3.5.0). Своя тема — флагом `--message`.
+  const flag = args.indexOf('--message');
+  const head = fs.readFileSync(central, 'utf8').split('\n').slice(1, 3).join(' ');
+  const auto = (head.match(/v\d+\.\d+\.\d+:\s*([^(]+)/) || [])[1];
+  const subject = flag >= 0 && args[flag + 1]
+    ? args[flag + 1]
+    : 'feat: ' + (auto ? auto.trim().toLowerCase() : 'обновление центрального кода');
+  const msg = subject.slice(0, 100) + '\n\n' + version;
   execFileSync('git', ['commit', '-m', msg], { cwd: ROOT, stdio: 'inherit' });
   execFileSync('git', ['push'], { cwd: ROOT, stdio: 'inherit' });
   console.log('   ✅ центральный код выложен');
