@@ -107,6 +107,50 @@ function writeToSheet(ss, name, rows, headers) {
   }
   ensureCapacity_(sheet, startRow, rows.length);
   sheet.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows);
+  dedupDayRows_(sheet, rows[0][0], WB_DEDUP_KEY_COLS);
+}
+
+/**
+ * v3.7.0. Убирает ПОВТОРНЫЕ строки одного дня, оставляя первую из каждой пары.
+ *
+ * Зачем. Листы WB копятся дописыванием, и второй прогон за день клал полный
+ * снимок ПОВЕРХ первого: 01.09.2026 у ИП1 в листе оказалось 190 строк вместо 95,
+ * 2016 шт вместо 1008 — ровно вдвое. В баланс такой лист отдаёт задвоенные
+ * запасы, и увидеть это глазами нельзя: строки выглядят настоящими.
+ *
+ * Почему не «удалить весь день и записать заново», как у Ozon. Справа от данных
+ * владелец держит СВОИ числа — итог дня в рублях, поставленный напротив блока
+ * этого дня. Снос всего дня утащил бы их вместе со строками. Поэтому удаляются
+ * только те строки, у которых уже есть ПОЛНЫЙ БЛИЗНЕЦ выше в том же дне: первый
+ * блок дня (тот, напротив которого стоят пометки) остаётся нетронутым.
+ *
+ * Идём снизу вверх — иначе номера строк съезжают под собственным удалением.
+ *
+ * @param {Sheet} sheet
+ * @param {*} when — дата прогона (значение колонки A)
+ * @param {number[]} keyCols — колонки (1-based), совпадение которых считается близнецом
+ * @returns {number} сколько строк удалено
+ */
+function dedupDayRows_(sheet, when, keyCols) {
+  const last = sheet.getLastRow();
+  if (last < 3) return 0;
+
+  const key = dayKey_(when);
+  if (!key) return 0;                 // дату не распознали — ничего не трогаем
+
+  const width = Math.max.apply(null, keyCols);
+  const values = sheet.getRange(2, 1, last - 1, Math.max(width, 1)).getValues();
+
+  const seen = {};
+  const doomed = [];
+  for (let i = 0; i < values.length; i++) {
+    if (dayKey_(values[i][0]) !== key) continue;
+    const k = keyCols.map(c => String(values[i][c - 1])).join(' ');
+    if (seen[k]) doomed.push(i + 2); else seen[k] = true;
+  }
+
+  for (let i = doomed.length - 1; i >= 0; i--) sheet.deleteRow(doomed[i]);
+  return doomed.length;
 }
 
 /**

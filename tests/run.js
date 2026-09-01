@@ -495,8 +495,13 @@ function ozonRoutes(warehouses, analytics, postings) {
 
 // ─── 13. Дебиторка: остатки кабинетов в баланс ──────────────────────────────
 {
+  // Дата берётся ЖИВАЯ: окно предпросмотра всегда спрашивает «сегодня», и тест с
+  // зашитым числом зеленеет ровно одни сутки (поймано 01.09.2026).
+  const p2 = n => String(n).padStart(2, '0');
+  const now = new Date();
+  const TODAY = `${p2(now.getDate())}.${p2(now.getMonth() + 1)}.${now.getFullYear()}`;
   const balance = new FakeSheet('Управленческий баланс Авто-тест', [
-    ['Месяц —', 'Начало', '31.08.2026'],
+    ['Месяц —', 'Начало', TODAY],
     ['Дебиторская задолженность', '', ''],
     ['ИП1', '', ''],
     ['Остаток на балансе кабинета ВБ', '', 5],
@@ -531,7 +536,7 @@ function ozonRoutes(warehouses, analytics, postings) {
     },
   });
 
-  const plan = e.call('planCabinetBalances_', '31.08.2026');
+  const plan = e.call('planCabinetBalances_', TODAY);
   eq('дебиторка: колонка найдена по дате', plan.col, 3);
   eq('дебиторка: заполняемых строк', plan.write.length, 2);
   const wb = plan.write.filter(w => w.mp === 'WB')[0];
@@ -556,7 +561,7 @@ function ozonRoutes(warehouses, analytics, postings) {
   eq('без подтверждения ничего не записано (prompt отменён)', balance.data[3][2], 5);
   eq('ячейка кабинета без прав не тронута', balance.data[8][2], before);
 
-  const prev = e.call('previewCabinetBalances', 'v3.6.0');
+  const prev = e.call('previewCabinetBalances', 'v3.7.0');
   ok('предпросмотр отдаёт html', /<table>/.test(prev.html));
   ok('в предпросмотре объяснено, почему «Ожидаем поступление» пусто',
      /Ожидаем поступление/.test(prev.html));
@@ -566,6 +571,47 @@ function ozonRoutes(warehouses, analytics, postings) {
   let msg = '';
   try { e2.call('planCabinetBalances_', '01.01.2030'); } catch (err) { msg = err.message; }
   ok('нет колонки с датой — понятная ошибка', /нет колонки 01\.01\.2030/.test(msg), msg);
+}
+
+// ─── 14. WB: второй прогон за день не задваивает лист ───────────────────────
+{
+  const HDR = ['Дата и время','Склад','Артикул продавца','Артикул WB','Баркод','Количество'];
+  const day1 = ['31.08.2026 8:00:00','Коледино','ART-1','111','BC-1',10];
+  const sheet = new FakeSheet('Остатки ВБ ИП1', [HDR, day1]);
+  // владелец держит СВОЙ итог справа, напротив блока прошлого дня
+  sheet.data[1][15] = 12345;
+
+  const e = makeEnv({ sheets: { 'Остатки ВБ ИП1': sheet } });
+  const rows = [
+    ['01.09.2026 8:00:00','Коледино','ART-1','111','BC-1',7],
+    ['01.09.2026 8:00:00','Электросталь','ART-2','222','BC-2',3],
+  ];
+  e.call('writeToSheet', e.ss, 'Остатки ВБ ИП1', rows, HDR);
+  eq('первый прогон дня: строки легли', sheet.getLastRow(), 4);
+
+  // второй прогон тех же суток — ровно то, что делает человек, нажав кнопку дважды
+  e.call('writeToSheet', e.ss, 'Остатки ВБ ИП1', rows, HDR);
+  const today = sheet.data.slice(1).filter(r => String(r[0]).indexOf('01.09.2026') === 0);
+  eq('второй прогон НЕ задвоил день', today.length, 2);
+  eq('количество не удвоилось', today.reduce((s, r) => s + r[5], 0), 10);
+  eq('прошлый день на месте', sheet.data[1][5], 10);
+  eq('число владельца справа не съехало', sheet.data[1][15], 12345);
+
+  // третий прогон с изменившимся остатком: близнец по ключу — значит дубль,
+  // побеждает ПЕРВАЯ запись дня (та, напротив которой владелец ставит пометки)
+  e.call('writeToSheet', e.ss, 'Остатки ВБ ИП1',
+         [['01.09.2026 9:00:00','Коледино','ART-1','111','BC-1',99]], HDR);
+  const after = sheet.data.slice(1).filter(r => String(r[0]).indexOf('01.09.2026') === 0);
+  eq('третий прогон не добавил строку', after.length, 2);
+
+  // разные дни не считаются дублями друг друга
+  e.call('writeToSheet', e.ss, 'Остатки ВБ ИП1',
+         [['02.09.2026 8:00:00','Коледино','ART-1','111','BC-1',5]], HDR);
+  eq('новый день дописался', sheet.data.slice(1)
+     .filter(r => String(r[0]).indexOf('02.09.2026') === 0).length, 1);
+
+  const n = e.call('dedupDayRows_', sheet, 'дата-не-дата', [2, 3, 5]);
+  eq('нераспознанная дата — ничего не трогаем', n, 0);
 }
 
 // ─── итог ───────────────────────────────────────────────────────────────────
